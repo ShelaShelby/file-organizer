@@ -470,26 +470,19 @@ fn removal_refused_outside_roots_and_in_protected_places() {
     assert_eq!(root_of(&env.roots, &env.roots.downloads.join("ok.bin")), Ok(RootKind::Downloads));
 }
 
-/// The real Recycle Bin: the file must end up in the Recycle Bin, or stay
-/// where it was. It must never just vanish without a trace.
+/// The real Recycle Bin: the file must end up IN the Recycle Bin (its
+/// content is read back from there), not just vanish.
 #[cfg(windows)]
 #[test]
 fn real_windows_recycle_bin() {
     let env = Env::new();
     let p = file(&env.roots.downloads, "recycle-me.txt", b"stage 2 recycle test", days(5));
-    match RecycleBin.recycle(&p) {
-        Ok(place) => {
-            assert!(!p.exists());
-            eprintln!("recycled to {place:?}");
-            if let Some(place) = place {
-                assert_eq!(fs::read(&place).unwrap(), b"stage 2 recycle test");
-            }
-        }
-        Err(e) => {
-            eprintln!("Recycle Bin not available here: {e}");
-            assert!(p.is_file(), "on failure the file must stay");
-        }
-    }
+    let place = RecycleBin.recycle(&p).expect("Recycle Bin should work on this drive");
+    eprintln!("recycled to {place:?}");
+    assert!(!p.exists());
+    let place = place.expect("Windows reports the place in the Recycle Bin");
+    assert!(place.to_string_lossy().to_lowercase().contains("$recycle.bin"));
+    assert_eq!(fs::read(&place).unwrap(), b"stage 2 recycle test");
 }
 
 #[cfg(not(windows))]

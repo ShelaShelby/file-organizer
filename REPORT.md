@@ -27,11 +27,9 @@
   sub-folders, oldest kept by default, change kept copy / untick group, zero-copy groups refused,
   changed-after-scan skipped (size and time), kept copy changed → group left, recycler failure leaves file,
   hidden/system files+folders, junctions, symlinks, locked, temp/shortcut/desktop.ini, outside-root and
-  `..` refused, cancel, big/old thresholds + settings + cap, settings fallback / no overwrite,
-  and one real Windows Recycle Bin test.
-
-## Size
-- Exe 5,888,512 bytes (~5.6 MB; stage 1 was ~5.5 MB).
+  `..` refused, cancel, big/old thresholds + settings + cap, settings fallback / no overwrite.
+- Real Recycle Bin test passes in Actions: file lands in `D:\$RECYCLE.BIN\…` with its content intact.
+- Exe size: 5,888,512 bytes (~5.6 MB; stage 1 was ~5.5 MB).
 
 ## Known gaps
 - No Undo for removals: restoring needs undocumented Recycle Bin internals; use Recycle Bin → Restore
