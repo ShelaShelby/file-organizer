@@ -57,6 +57,19 @@ pub struct Plan {
     pub errors: Vec<(PathBuf, String)>,
 }
 
+/// One line per folder for the Sort tab: "Downloads 12 · Desktop 3 · Documents 5"
+/// (folders with nothing to move are left out).
+pub fn summary_by_folder(plan: &Plan, roots: &Roots) -> String {
+    let parts: Vec<String> = roots
+        .kinds()
+        .filter_map(|k| {
+            let n = plan.moves.iter().filter(|m| m.root == k).count();
+            (n > 0).then(|| format!("{} {n}", roots.label(k)))
+        })
+        .collect();
+    parts.join(" · ")
+}
+
 /// "YYYY-MM" of a time, in local time.
 pub fn month_folder(t: SystemTime) -> String {
     DateTime::<Local>::from(t).format("%Y-%m").to_string()

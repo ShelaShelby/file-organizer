@@ -235,6 +235,11 @@ pub fn profile_dir() -> io::Result<PathBuf> {
     sys::known_folder(sys::Folder::Profile)
 }
 
+/// The Windows fonts folder (Known Folder API).
+pub fn fonts_dir() -> io::Result<PathBuf> {
+    sys::known_folder(sys::Folder::Fonts)
+}
+
 /// The Windows folder (e.g. `C:\Windows`), asked from Windows itself rather
 /// than from an environment variable.
 pub fn windows_dir() -> io::Result<PathBuf> {
@@ -371,9 +376,10 @@ mod sys {
     use windows_sys::core::{GUID, PWSTR};
     use windows_sys::Win32::System::Com::CoTaskMemFree;
     use windows_sys::Win32::UI::Shell::{
-        FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_LocalAppData, FOLDERID_Profile,
-        FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesCommon, FOLDERID_ProgramFilesX86,
-        FOLDERID_RoamingAppData, FOLDERID_System, FOLDERID_Windows, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
+        FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Fonts, FOLDERID_LocalAppData,
+        FOLDERID_Profile, FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesCommon,
+        FOLDERID_ProgramFilesX86, FOLDERID_RoamingAppData, FOLDERID_System, FOLDERID_Windows, SHGetKnownFolderPath,
+        KF_FLAG_DEFAULT,
     };
 
     pub enum Folder {
@@ -389,6 +395,7 @@ mod sys {
         ProgramFilesCommon,
         ProgramData,
         Profile,
+        Fonts,
     }
 
     /// True if the drive of `p` is a mapped network drive.
@@ -419,6 +426,7 @@ mod sys {
             Folder::ProgramFilesCommon => FOLDERID_ProgramFilesCommon,
             Folder::ProgramData => FOLDERID_ProgramData,
             Folder::Profile => FOLDERID_Profile,
+            Folder::Fonts => FOLDERID_Fonts,
         };
         let mut out: PWSTR = std::ptr::null_mut();
         // SAFETY: documented API; `out` is freed with CoTaskMemFree in all cases.
@@ -460,6 +468,7 @@ mod sys {
         ProgramFilesCommon,
         ProgramData,
         Profile,
+        Fonts,
     }
 
     pub fn is_network_drive(_p: &std::path::Path) -> bool {

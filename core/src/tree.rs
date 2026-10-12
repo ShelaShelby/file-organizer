@@ -155,6 +155,40 @@ fn walk_dir(
     Ok(())
 }
 
+/// Column a file list is sorted by (click on its header).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortKey {
+    Name,
+    Size,
+    Modified,
+}
+
+/// Order (indices into `files`) for sorting by `key`; ties keep their
+/// order. Names compare ignoring case.
+pub fn sort_order(files: &[ScannedFile], key: SortKey, ascending: bool) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..files.len()).collect();
+    let name = |f: &ScannedFile| f.path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    idx.sort_by(|&a, &b| {
+        let (x, y) = (&files[a], &files[b]);
+        let o = match key {
+            SortKey::Name => name(x).cmp(&name(y)),
+            SortKey::Size => x.size.cmp(&y.size),
+            SortKey::Modified => x.modified.cmp(&y.modified),
+        };
+        if ascending {
+            o
+        } else {
+            o.reverse()
+        }
+    });
+    idx
+}
+
+/// Puts `items` in the order given by [`sort_order`].
+pub fn apply_order<T: Clone>(items: &mut Vec<T>, order: &[usize]) {
+    *items = order.iter().map(|&i| items[i].clone()).collect();
+}
+
 /// "2026-10-12" (local time) for a last-changed time.
 pub fn date_text(t: SystemTime) -> String {
     chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d").to_string()

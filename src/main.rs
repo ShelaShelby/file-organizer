@@ -5,6 +5,7 @@
 
 use eframe::egui;
 use organizer_core::bigold::{find_big_old, BigOldOptions, BigOldScan};
+use organizer_core::config::Theme;
 use organizer_core::dupes::{find_duplicates, remove_duplicates, DupOptions, DupScan, GroupChoice};
 use organizer_core::installers::{find_installers, InstallerOptions, InstallerScan};
 use organizer_core::journal::BatchReport;
@@ -127,13 +128,15 @@ pub struct DupView {
     pub scan: DupScan,
     pub include: Vec<bool>,
     pub keep: Vec<Vec<bool>>,
+    /// Column the list is sorted by (and ascending), after a header click.
+    pub sort: Option<(organizer_core::tree::SortKey, bool)>,
 }
 
 impl DupView {
     fn new(scan: DupScan) -> DupView {
         let keep = scan.groups.iter().map(|g| g.default_keep()).collect();
         let include = vec![true; scan.groups.len()];
-        DupView { scan, include, keep }
+        DupView { scan, include, keep, sort: None }
     }
 
     pub fn choices(&self) -> Vec<GroupChoice> {
@@ -188,6 +191,7 @@ pub struct BigOldView {
     /// Tick boxes of the installers list (none ticked at first).
     pub installer_ticked: Vec<bool>,
     pub list: BigList,
+    pub sort: Option<(organizer_core::tree::SortKey, bool)>,
 }
 
 /// Files waiting for the user to press Confirm in the dialog.
@@ -244,7 +248,7 @@ pub struct App {
 
 impl App {
     fn new(ctx: &egui::Context) -> App {
-        ctx.set_theme(egui::ThemePreference::Dark);
+        load_fonts(ctx);
         ctx.all_styles_mut(|s| {
             for font in s.text_styles.values_mut() {
                 font.size *= 1.15;
@@ -301,8 +305,13 @@ impl App {
             message: (!problems.is_empty()).then(|| problems.join("\n")),
             job: None,
         };
+        app.apply_theme(ctx, app.settings.theme);
         app.refresh_history();
         app
+    }
+
+    fn apply_theme(&self, ctx: &egui::Context, theme: Theme) {
+        ctx.set_theme(theme_preference(theme));
     }
 
     /// Rebuilds the chosen folders after the extra folders changed; old
@@ -527,7 +536,8 @@ impl App {
             }
             JobResult::BigOld(Ok((scan, installers))) => {
                 let installer_ticked = vec![false; installers.files.len()];
-                self.bigold = Some(BigOldView { scan, installers, installer_ticked, list: self.bigold_list_next });
+                self.bigold =
+                    Some(BigOldView { scan, installers, installer_ticked, list: self.bigold_list_next, sort: None });
             }
             JobResult::Done(Ok(report), label) => {
                 if let Some(d) = &mut self.dupes {
@@ -570,24 +580,18 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(150)); // live file count
         }
 
+        // Two rows (title + buttons, then the tabs) so nothing is cut off
+        // at the smallest window size.
         egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.heading("File Organizer");
-                ui.add_space(24.0);
-                for (tab, name) in [
-                    (Tab::Sort, "Sort"),
-                    (Tab::Duplicates, "Duplicates"),
-                    (Tab::BigOld, "Big and old"),
-                    (Tab::Rename, "Rename"),
-                ] {
-                    ui.selectable_value(&mut self.tab, tab, egui::RichText::new(name).size(17.0));
-                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.selectable_label(self.settings_open, "⚙ Settings").clicked() {
+                    if ui.selectable_label(self.settings_open, "Settings").clicked() {
                         self.settings_open = !self.settings_open;
                         self.settings_draft = self.settings.clone();
                         self.autostart = organizer_core::autostart::status();
+                        self.apply_theme(&ctx, self.settings.theme);
                     }
                     if ui
                         .button("Start background sorting")
@@ -598,12 +602,32 @@ impl eframe::App for App {
                     }
                 });
             });
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                use organizer_core::window::tab_title;
+                let counts = [
+                    (Tab::Sort, tab_title("Sort", self.plan.as_ref().map(|p| p.moves.len()))),
+                    (Tab::Duplicates, tab_title("Duplicates", self.dupes.as_ref().map(|d| d.scan.groups.len()))),
+                    (Tab::BigOld, "Big and old".to_string()),
+                    (Tab::Rename, tab_title("Rename", self.renames.as_ref().map(|r| r.items.len()))),
+                ];
+                for (tab, name) in counts {
+                    ui.selectable_value(&mut self.tab, tab, egui::RichText::new(name).size(17.0));
+                }
+            });
             ui.add_space(4.0);
         });
 
         egui::Panel::bottom("bottom").show(ui, |ui| self.status_bar(ui));
 
-        egui::Panel::right("history").default_size(280.0).resizable(true).show(ui, |ui| self.history_panel(ui, &ctx));
+        let layout = organizer_core::window::layout(ctx.content_rect().width());
+        egui::Panel::right("history")
+            .default_size(layout.history_width)
+            .max_size(
+                (ctx.content_rect().width() - organizer_core::window::MIN_CONTENT_WIDTH).max(layout.history_width),
+            )
+            .resizable(true)
+            .show(ui, |ui| self.history_panel(ui, &ctx));
 
         egui::CentralPanel::default_margins().show(ui, |ui| match self.tab {
             Tab::Sort => tabs::sort_tab(self, ui, &ctx),
@@ -670,7 +694,11 @@ impl App {
         } else if self.job.is_none() && self.message.is_none() {
             if let Some(roots) = &self.roots {
                 let names: Vec<String> = roots.kinds().map(|k| roots.label(k)).collect();
-                ui.weak(format!("Folders: {}", names.join("   ·   "))).on_hover_text(
+                ui.add(
+                    egui::Label::new(egui::RichText::new(format!("Folders: {}", names.join("   ·   "))).weak())
+                        .truncate(),
+                )
+                .on_hover_text(
                     roots.kinds().map(|k| roots.get(k).display().to_string()).collect::<Vec<_>>().join("\n"),
                 );
             }
@@ -681,12 +709,22 @@ impl App {
     fn history_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.add_space(6.0);
         ui.heading("History");
+        let t = organizer_core::journal::totals(&self.history);
+        ui.add(
+            egui::Label::new(egui::RichText::new(format!(
+                "Sent to the Recycle Bin so far: {}, {}",
+                plural(t.recycled_files, "file"),
+                human_size(t.recycled_bytes)
+            )))
+            .wrap(),
+        );
+        ui.label(format!("Tidied so far: {}", plural(t.tidied_files, "file")));
         ui.separator();
         let mut undo = None;
         let busy = self.busy();
         egui::ScrollArea::vertical().show(ui, |ui| {
             if self.history.is_empty() {
-                ui.weak("Nothing done yet.");
+                ui.weak("Nothing done yet. Everything you sort, rename or remove shows up here.");
             }
             for b in &self.history {
                 let time = b.time.get(..16).unwrap_or(&b.time).replace('T', " ");
@@ -776,6 +814,14 @@ impl App {
                     ui.label("Duplicates: ignore files smaller than");
                     ui.add(egui::DragValue::new(&mut d.min_duplicate_kb).range(0..=MIN_DUPLICATE_KB_MAX).suffix(" KB"));
                     ui.end_row();
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Colours:");
+                    for t in Theme::ALL {
+                        if ui.radio_value(&mut d.theme, t, t.label()).changed() {
+                            ctx.set_theme(theme_preference(t)); // at once; saved with Save
+                        }
+                    }
                 });
                 ui.add_space(6.0);
                 ui.strong("Extra folders");
@@ -868,6 +914,7 @@ impl App {
         }
         if !open {
             self.settings_open = false;
+            self.apply_theme(ctx, self.settings.theme); // closed without saving
         }
     }
 
@@ -893,7 +940,7 @@ impl App {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 go = ui
-                    .button(egui::RichText::new(format!("🗑 Send {} to the Recycle Bin", files.len())).color(RED))
+                    .button(egui::RichText::new(format!("Send {} to the Recycle Bin", files.len())).color(RED))
                     .clicked();
                 cancel = ui.button("Cancel").clicked();
             });
@@ -904,6 +951,41 @@ impl App {
             self.pending = None;
         }
     }
+}
+
+pub fn theme_preference(t: Theme) -> egui::ThemePreference {
+    match t {
+        Theme::System => egui::ThemePreference::System,
+        Theme::Dark => egui::ThemePreference::Dark,
+        Theme::Light => egui::ThemePreference::Light,
+    }
+}
+
+/// Segoe UI as the main font and Segoe UI Emoji as a last fallback, read
+/// from the Windows fonts folder if they are there; egui's own fonts stay
+/// in between, so anything Segoe UI lacks still has a glyph.
+pub fn load_fonts(ctx: &egui::Context) {
+    let Ok(dir) = organizer_core::paths::fonts_dir() else { return };
+    let (main, emoji) = organizer_core::window::font_files(&dir);
+    let read = |p: Option<std::path::PathBuf>| p.and_then(|p| std::fs::read(p).ok());
+    let (main, emoji) = (read(main), read(emoji));
+    if main.is_none() && emoji.is_none() {
+        return;
+    }
+    let mut fonts = egui::FontDefinitions::default();
+    for (name, data, first) in [("segoe-ui", main, true), ("segoe-ui-emoji", emoji, false)] {
+        let Some(data) = data else { continue };
+        fonts.font_data.insert(name.to_owned(), std::sync::Arc::new(egui::FontData::from_owned(data)));
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            let list = fonts.families.entry(family.clone()).or_default();
+            if first && family == egui::FontFamily::Proportional {
+                list.insert(0, name.to_owned());
+            } else if !first {
+                list.push(name.to_owned());
+            }
+        }
+    }
+    ctx.set_fonts(fonts);
 }
 
 pub fn plural(n: usize, word: &str) -> String {

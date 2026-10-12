@@ -105,6 +105,16 @@ pub struct BatchSummary {
     pub recycled: Vec<Entry>,
 }
 
+/// Totals for the History header.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Totals {
+    /// Files sent to the Recycle Bin (it may have been emptied since).
+    pub recycled_files: usize,
+    pub recycled_bytes: u64,
+    /// Files moved or renamed and not undone.
+    pub tidied_files: usize,
+}
+
 pub struct Journal {
     path: PathBuf,
 }
@@ -239,6 +249,11 @@ impl Journal {
         Ok(map.into_values().rev().collect())
     }
 
+    /// Totals over the whole journal.
+    pub fn totals(&self) -> io::Result<Totals> {
+        Ok(totals(&self.history()?))
+    }
+
     /// Undo the newest batch that still has moves left to undo.
     pub fn undo_last(&self, roots: &Roots) -> io::Result<Option<BatchReport>> {
         self.undo_last_where(roots, |_| true)
@@ -339,6 +354,17 @@ impl Journal {
         }
         Ok(report)
     }
+}
+
+/// [`Journal::totals`] from an already read history.
+pub fn totals(history: &[BatchSummary]) -> Totals {
+    let mut t = Totals::default();
+    for b in history {
+        t.recycled_files += b.recycled.len();
+        t.recycled_bytes += b.recycled.iter().map(|e| e.size).sum::<u64>();
+        t.tidied_files += b.remaining.len();
+    }
+    t
 }
 
 /// After undo, remove the `<Type>\<YYYY-MM>` (and `From Desktop`) folders

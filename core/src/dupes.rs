@@ -144,6 +144,28 @@ pub fn hash_file(path: &std::path::Path, limit: Option<usize>, progress: &Progre
     Ok(*hasher.finalize().as_bytes())
 }
 
+/// Sorts the files inside every group by `key`, then the groups by their
+/// first file, keeping the "keep" and "include" ticks with their rows.
+pub fn sort_groups(
+    groups: &mut Vec<DupGroup>,
+    keep: &mut Vec<Vec<bool>>,
+    include: &mut Vec<bool>,
+    key: crate::tree::SortKey,
+    ascending: bool,
+) {
+    use crate::tree::{apply_order, sort_order};
+    for (g, k) in groups.iter_mut().zip(keep.iter_mut()) {
+        let order = sort_order(&g.files, key, ascending);
+        apply_order(&mut g.files, &order);
+        apply_order(k, &order);
+    }
+    let firsts: Vec<ScannedFile> = groups.iter().map(|g| g.files[0].clone()).collect();
+    let order = sort_order(&firsts, key, ascending);
+    apply_order(groups, &order);
+    apply_order(keep, &order);
+    apply_order(include, &order);
+}
+
 /// The user's choice for one group: which copies to keep.
 #[derive(Debug, Clone)]
 pub struct GroupChoice {

@@ -58,7 +58,7 @@ impl eframe::App for Note {
             ui.horizontal(|ui| {
                 ui.strong("File Organizer");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("✕").clicked() {
+                    if ui.small_button("Close").clicked() {
                         self.close_at = now;
                     }
                 });
@@ -145,7 +145,13 @@ pub fn run(batch: u64) -> eframe::Result {
         "File Organizer note",
         options,
         Box::new(move |cc| {
-            cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
+            let theme = app_data_dir()
+                .ok()
+                .and_then(|d| std::fs::read_to_string(d.join("settings.json")).ok())
+                .map(|t| organizer_core::Settings::from_json(&t).0.theme)
+                .unwrap_or_default();
+            crate::load_fonts(&cc.egui_ctx);
+            cc.egui_ctx.set_theme(crate::theme_preference(theme));
             Ok(Box::new(Note::load(batch)))
         }),
     )

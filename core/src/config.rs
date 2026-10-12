@@ -10,6 +10,29 @@ use std::path::{Path, PathBuf};
 /// Name of the folder used for files whose extension is not in the map.
 pub const OTHER: &str = "Other";
 
+/// Window colours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Follow Windows.
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 3] = [Theme::System, Theme::Dark, Theme::Light];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Theme::System => "Same as Windows",
+            Theme::Dark => "Dark",
+            Theme::Light => "Light",
+        }
+    }
+}
+
 /// One type folder and the file extensions that belong in it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Category {
@@ -37,6 +60,8 @@ pub struct Settings {
     /// Extra folders handled like Documents (at most 10; each one is
     /// checked with `paths::check_extra` before it is used).
     pub extra_folders: Vec<PathBuf>,
+    /// Window colours (also used by the note popup).
+    pub theme: Theme,
 }
 
 /// Allowed ranges; values outside fall back to the default.
@@ -74,6 +99,7 @@ impl Default for Settings {
             background_paused: false,
             installer_days: 30,
             extra_folders: Vec::new(),
+            theme: Theme::System,
         }
     }
 }
@@ -171,6 +197,9 @@ impl Settings {
                 bad.push(format!("extra_folders (only the first {MAX_EXTRA} are used)"));
             }
             s.extra_folders = x;
+        }
+        if let Some(x) = field(&v, "theme", |_: &Theme| true, &mut bad) {
+            s.theme = x;
         }
         let warn =
             (!bad.is_empty()).then(|| format!("settings.json: bad value for {}; using the default", bad.join(", ")));

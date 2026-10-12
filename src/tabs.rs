@@ -4,7 +4,7 @@ use crate::{human_size, plural, short, show_in_folder, App, BigList, Pending, RE
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use organizer_core::dupes::{check_choices, space_freed};
-use organizer_core::tree::{date_text, Skipped};
+use organizer_core::tree::{apply_order, date_text, sort_order, Skipped, SortKey};
 use organizer_core::ScannedFile;
 
 fn row_height(ui: &egui::Ui) -> f32 {
@@ -51,17 +51,67 @@ fn skipped_list(ui: &mut egui::Ui, s: &Skipped) {
     });
 }
 
+/// A clickable column header; returns true when clicked. Shows ▲/▼ next
+/// to the column the list is sorted by.
+fn sort_header(ui: &mut egui::Ui, title: &str, key: SortKey, current: Option<(SortKey, bool)>) -> bool {
+    let text = match current {
+        Some((k, asc)) if k == key => format!("{title} {}", if asc { "^" } else { "v" }),
+        _ => title.to_string(),
+    };
+    ui.add(egui::Button::new(egui::RichText::new(text).strong()).frame(false)).on_hover_text("Click to sort").clicked()
+}
+
+/// One header cell: clickable when it has a sort key.
+fn header_cell(
+    h: &mut egui_extras::TableRow<'_, '_>,
+    title: &str,
+    key: Option<SortKey>,
+    current: Option<(SortKey, bool)>,
+    clicked: &mut Option<SortKey>,
+) {
+    h.col(|ui| match key {
+        Some(k) => {
+            if sort_header(ui, title, k, current) {
+                *clicked = Some(k);
+            }
+        }
+        None => {
+            ui.strong(title);
+        }
+    });
+}
+
+// Column widths (points). The widest table (Big and old) must fit the
+// content area at the smallest window size; see the test below.
+const TICK_W: f32 = 28.0;
+const KEEP_W: f32 = 60.0;
+const NAME_MIN: f32 = 90.0;
+const FOLDER_MIN: f32 = 80.0;
+const SIZE_W: f32 = 75.0;
+const DATE_W: f32 = 95.0;
+const ACTIONS_W: f32 = 180.0;
+
+/// Next sort state after clicking `key`: same column flips the direction;
+/// a new column starts ascending (sizes and dates start with the biggest /
+/// newest first).
+fn next_sort(current: Option<(SortKey, bool)>, key: SortKey) -> (SortKey, bool) {
+    match current {
+        Some((k, asc)) if k == key => (key, !asc),
+        _ => (key, key == SortKey::Name),
+    }
+}
+
 // ---------------------------------------------------------------- Sort
 
 pub fn sort_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     let can = !app.busy() && app.roots.is_some();
     ui.horizontal(|ui| {
-        if ui.add_enabled(can, egui::Button::new("🔍 Scan")).clicked() {
+        if ui.add_enabled(can, egui::Button::new("Scan")).clicked() {
             app.start_scan(ctx);
         }
         let n = app.checked.iter().filter(|c| **c).count();
         let can_confirm = can && app.plan.is_some() && n > 0 && app.journal.is_some();
-        if ui.add_enabled(can_confirm, egui::Button::new(format!("✔ Confirm ({n})"))).clicked() {
+        if ui.add_enabled(can_confirm, egui::Button::new(format!("Confirm ({n})"))).clicked() {
             app.start_confirm(ctx);
         }
         if ui.add_enabled(!app.busy() && app.journal.is_some(), egui::Button::new("Undo last")).clicked() {
@@ -87,6 +137,10 @@ pub fn sort_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
             app.checked.iter_mut().for_each(|c| *c = false);
         }
     });
+    let by_folder = organizer_core::plan::summary_by_folder(plan, roots);
+    if !by_folder.is_empty() {
+        ui.add(egui::Label::new(egui::RichText::new(by_folder).weak()).wrap());
+    }
     if !plan.skipped.is_empty() || !plan.errors.is_empty() {
         egui::CollapsingHeader::new(format!("Left alone ({})", plan.skipped.len() + plan.errors.len())).show(
             ui,
@@ -157,11 +211,11 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     let problem = check_choices(&choices);
     let to_go: usize = choices.iter().map(|c| c.to_remove().count()).sum();
     ui.horizontal(|ui| {
-        if ui.add_enabled(can, egui::Button::new("🔍 Find duplicates")).clicked() {
+        if ui.add_enabled(can, egui::Button::new("Find duplicates")).clicked() {
             app.start_dupes(ctx);
         }
         let can_confirm = can && app.journal.is_some() && problem.is_none() && to_go > 0;
-        if ui.add_enabled(can_confirm, egui::Button::new(format!("🗑 Confirm ({to_go})"))).clicked() {
+        if ui.add_enabled(can_confirm, egui::Button::new(format!("Confirm ({to_go})"))).clicked() {
             app.pending = Some(Pending::Duplicates(choices.clone()));
         }
         ui.weak(format!("Ignores files under {} KB.", app.settings.min_duplicate_kb));
@@ -171,11 +225,11 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         intro(
             ui,
             "Find files with exactly the same content.",
-            "Downloads, Desktop and Documents with all sub-folders. Nothing goes until you press Confirm, and then only to the Recycle Bin.",
+            "Downloads, Desktop, Documents and your extra folders, with all sub-folders. Nothing goes until you press Confirm, and then only to the Recycle Bin.",
         );
         return;
     };
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.strong(format!(
             "{} of identical files · {} would be freed",
             plural(view.scan.groups.len(), "group"),
@@ -205,20 +259,26 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         .collect();
     let row_h = row_height(ui);
     let roots = app.roots.clone();
+    let current = view.sort;
+    let mut clicked = None;
     TableBuilder::new(ui)
         .striped(false)
         .resizable(true)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::exact(80.0))
-        .column(Column::initial(260.0).at_least(100.0).clip(true))
-        .column(Column::remainder().at_least(140.0).clip(true))
-        .column(Column::exact(90.0))
-        .column(Column::exact(110.0))
+        .column(Column::exact(KEEP_W))
+        .column(Column::initial(260.0).at_least(NAME_MIN).clip(true))
+        .column(Column::remainder().at_least(FOLDER_MIN).clip(true))
+        .column(Column::exact(SIZE_W))
+        .column(Column::exact(DATE_W))
         .header(row_h, |mut h| {
-            for t in ["Keep", "File", "Folder", "Size", "Last changed"] {
-                h.col(|ui| {
-                    ui.strong(t);
-                });
+            for (t, key) in [
+                ("Keep", None),
+                ("File", Some(SortKey::Name)),
+                ("Folder", None),
+                ("Size", Some(SortKey::Size)),
+                ("Last changed", Some(SortKey::Modified)),
+            ] {
+                header_cell(&mut h, t, key, current, &mut clicked);
             }
         })
         .body(|body| {
@@ -253,7 +313,7 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
                         let file = &group.files[i];
                         let included = view.include[g];
                         row.col(|ui| {
-                            ui.add_space(18.0);
+                            ui.add_space(14.0);
                             ui.add_enabled(included, egui::Checkbox::without_text(&mut view.keep[g][i]));
                         });
                         row.col(|ui| {
@@ -281,6 +341,11 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
                 }
             });
         });
+    if let Some(k) = clicked {
+        let (key, asc) = next_sort(current, k);
+        organizer_core::dupes::sort_groups(&mut view.scan.groups, &mut view.keep, &mut view.include, key, asc);
+        view.sort = Some((key, asc));
+    }
 }
 
 // ---------------------------------------------------------------- Big and old
@@ -288,7 +353,7 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
 pub fn bigold_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     let can = !app.busy() && app.roots.is_some();
     ui.horizontal(|ui| {
-        if ui.add_enabled(can, egui::Button::new("🔍 Find big and old files")).clicked() {
+        if ui.add_enabled(can, egui::Button::new("Find big and old files")).clicked() {
             app.start_bigold(ctx);
         }
         ui.weak(format!(
@@ -334,22 +399,28 @@ pub fn bigold_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     let row_h = row_height(ui);
     let mut recycle: Option<ScannedFile> = None;
     let mut open_err = None;
+    let current = view.sort;
     let busy = app.busy();
     let folders: Vec<String> = list.iter().map(|f| folder(app, f)).collect();
+    let mut clicked = None;
     TableBuilder::new(ui)
         .striped(true)
         .resizable(true)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::initial(260.0).at_least(100.0).clip(true))
-        .column(Column::remainder().at_least(140.0).clip(true))
-        .column(Column::exact(90.0))
-        .column(Column::exact(110.0))
-        .column(Column::exact(230.0))
+        .column(Column::initial(240.0).at_least(NAME_MIN).clip(true))
+        .column(Column::remainder().at_least(FOLDER_MIN).clip(true))
+        .column(Column::exact(SIZE_W))
+        .column(Column::exact(DATE_W))
+        .column(Column::exact(ACTIONS_W))
         .header(row_h, |mut h| {
-            for t in ["File", "Folder", "Size", "Last changed", ""] {
-                h.col(|ui| {
-                    ui.strong(t);
-                });
+            for (t, key) in [
+                ("File", Some(SortKey::Name)),
+                ("Folder", None),
+                ("Size", Some(SortKey::Size)),
+                ("Last changed", Some(SortKey::Modified)),
+                ("", None),
+            ] {
+                header_cell(&mut h, t, key, current, &mut clicked);
             }
         })
         .body(|body| {
@@ -369,17 +440,24 @@ pub fn bigold_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
                     ui.label(date_text(f.modified));
                 });
                 row.col(|ui| {
-                    if ui.small_button("📂 Open folder").clicked() {
+                    if ui.small_button("Open folder").clicked() {
                         if let Err(e) = show_in_folder(&f.path) {
                             open_err = Some(format!("Could not open Explorer: {e}"));
                         }
                     }
-                    if ui.add_enabled(!busy, egui::Button::new("🗑 Recycle").small()).clicked() {
+                    if ui.add_enabled(!busy, egui::Button::new("Recycle").small()).clicked() {
                         recycle = Some(f.clone());
                     }
                 });
             });
         });
+    if let (Some(k), Some(view)) = (clicked, &mut app.bigold) {
+        let (key, asc) = next_sort(current, k);
+        let files = if view.list == BigList::Old { &mut view.scan.old } else { &mut view.scan.big };
+        let order = sort_order(files, key, asc);
+        apply_order(files, &order);
+        view.sort = Some((key, asc));
+    }
     if let Some(f) = recycle {
         app.pending = Some(Pending::Files(vec![f]));
     }
@@ -424,20 +502,26 @@ fn installers_list(app: &mut App, ui: &mut egui::Ui) {
     });
     let row_h = row_height(ui);
     let ticks = &mut view.installer_ticked;
+    let current = view.sort;
+    let mut clicked = None;
     TableBuilder::new(ui)
         .striped(true)
         .resizable(true)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::exact(28.0))
-        .column(Column::initial(260.0).at_least(100.0).clip(true))
-        .column(Column::remainder().at_least(120.0).clip(true))
-        .column(Column::exact(90.0))
-        .column(Column::exact(110.0))
+        .column(Column::exact(TICK_W))
+        .column(Column::initial(260.0).at_least(NAME_MIN).clip(true))
+        .column(Column::remainder().at_least(FOLDER_MIN).clip(true))
+        .column(Column::exact(SIZE_W))
+        .column(Column::exact(DATE_W))
         .header(row_h, |mut h| {
-            for t in ["", "File", "Folder", "Size", "Last changed"] {
-                h.col(|ui| {
-                    ui.strong(t);
-                });
+            for (t, key) in [
+                ("", None),
+                ("File", Some(SortKey::Name)),
+                ("Folder", None),
+                ("Size", Some(SortKey::Size)),
+                ("Last changed", Some(SortKey::Modified)),
+            ] {
+                header_cell(&mut h, t, key, current, &mut clicked);
             }
         })
         .body(|body| {
@@ -461,6 +545,13 @@ fn installers_list(app: &mut App, ui: &mut egui::Ui) {
                 });
             });
         });
+    if let Some(k) = clicked {
+        let (key, asc) = next_sort(current, k);
+        let order = sort_order(&view.installers.files, key, asc);
+        apply_order(&mut view.installers.files, &order);
+        apply_order(&mut view.installer_ticked, &order);
+        view.sort = Some((key, asc));
+    }
     if send {
         app.pending = Some(Pending::Files(ticked));
     }
@@ -472,11 +563,11 @@ pub fn rename_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     let can = !app.busy() && app.roots.is_some();
     let n = app.rename_checked.iter().filter(|c| **c).count();
     ui.horizontal(|ui| {
-        if ui.add_enabled(can, egui::Button::new("🔍 Find messy names")).clicked() {
+        if ui.add_enabled(can, egui::Button::new("Find messy names")).clicked() {
             app.start_renames(ctx);
         }
         let can_confirm = can && app.renames.is_some() && n > 0 && app.journal.is_some();
-        if ui.add_enabled(can_confirm, egui::Button::new(format!("✔ Rename ticked ({n})"))).clicked() {
+        if ui.add_enabled(can_confirm, egui::Button::new(format!("Rename ticked ({n})"))).clicked() {
             app.start_rename_confirm(ctx);
         }
     });
@@ -550,4 +641,29 @@ pub fn rename_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
                 });
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn widest_table_fits_the_smallest_window() {
+        let content = organizer_core::window::layout(organizer_core::window::MIN_WINDOW[0]).content_width;
+        let margins = 16.0 + 5.0 * 8.0; // panel margins + space between columns
+        let big_old = NAME_MIN + FOLDER_MIN + SIZE_W + DATE_W + ACTIONS_W + margins;
+        let dupes = KEEP_W + NAME_MIN + FOLDER_MIN + SIZE_W + DATE_W + margins;
+        let installers = TICK_W + NAME_MIN + FOLDER_MIN + SIZE_W + DATE_W + margins;
+        for w in [big_old, dupes, installers] {
+            assert!(w <= content, "{w} > {content}");
+        }
+    }
+
+    #[test]
+    fn clicking_a_header_sorts_then_flips() {
+        assert_eq!(next_sort(None, SortKey::Name), (SortKey::Name, true));
+        assert_eq!(next_sort(None, SortKey::Size), (SortKey::Size, false));
+        assert_eq!(next_sort(Some((SortKey::Size, false)), SortKey::Size), (SortKey::Size, true));
+        assert_eq!(next_sort(Some((SortKey::Size, true)), SortKey::Modified), (SortKey::Modified, false));
+    }
 }
