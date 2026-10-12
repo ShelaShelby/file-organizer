@@ -1,6 +1,7 @@
 //! Settings (stored in `%APPDATA%\file-organizer\settings.json`) and the
 //! extension -> type-folder map.
 
+use crate::paths::MAX_EXTRA;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
@@ -33,6 +34,9 @@ pub struct Settings {
     pub background_paused: bool,
     /// "Old installers" list: installers not changed for this many days.
     pub installer_days: u32,
+    /// Extra folders handled like Documents (at most 10; each one is
+    /// checked with `paths::check_extra` before it is used).
+    pub extra_folders: Vec<PathBuf>,
 }
 
 /// Allowed ranges; values outside fall back to the default.
@@ -69,6 +73,7 @@ impl Default for Settings {
             min_duplicate_kb: 1,
             background_paused: false,
             installer_days: 30,
+            extra_folders: Vec::new(),
         }
     }
 }
@@ -159,6 +164,13 @@ impl Settings {
             &mut bad,
         ) {
             s.installer_days = x;
+        }
+        if let Some(mut x) = field(&v, "extra_folders", |_: &Vec<PathBuf>| true, &mut bad) {
+            if x.len() > MAX_EXTRA {
+                x.truncate(MAX_EXTRA);
+                bad.push(format!("extra_folders (only the first {MAX_EXTRA} are used)"));
+            }
+            s.extra_folders = x;
         }
         let warn =
             (!bad.is_empty()).then(|| format!("settings.json: bad value for {}; using the default", bad.join(", ")));

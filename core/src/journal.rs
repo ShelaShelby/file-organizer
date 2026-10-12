@@ -4,7 +4,7 @@
 
 use crate::fsops::{move_no_replace, path_key};
 use crate::paths::{Roots, FROM_DESKTOP};
-use crate::remove::{journal_path_ok, root_of};
+use crate::remove::{journal_path_ok, root_of, NOT_IN_LIST};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -263,8 +263,10 @@ impl Journal {
     fn entry_problem(&self, e: &Entry, roots: &Roots) -> Option<String> {
         let app_dir = self.path.parent();
         for p in [&e.new, &e.old] {
-            if let Err(why) = journal_path_ok(roots, p, app_dir) {
-                return Some(format!("journal entry looks wrong ({why})"));
+            match journal_path_ok(roots, p, app_dir) {
+                Ok(_) => {}
+                Err(why) if why == NOT_IN_LIST => return Some(why),
+                Err(why) => return Some(format!("journal entry looks wrong ({why})")),
             }
         }
         None

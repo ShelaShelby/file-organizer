@@ -32,8 +32,9 @@ impl Env {
             downloads: base.join("Downloads"),
             desktop: base.join("Desktop"),
             documents: base.join("Documents"),
+            extra: Vec::new(),
         };
-        for k in RootKind::ALL {
+        for k in roots.kinds() {
             fs::create_dir_all(roots.get(k)).unwrap();
         }
         let journal = Journal::new(base.join("appdata").join("journal.jsonl"));

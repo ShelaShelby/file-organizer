@@ -4,7 +4,7 @@
 use organizer_core::autosort::{note_text, AutoSorter};
 use organizer_core::journal::{Record, TAG_AUTO, TAG_RENAME};
 use organizer_core::rename::{find_renames, is_valid_windows_name, proposed_name, rename_files, RenameScan};
-use organizer_core::{execute, Journal, Progress, RootKind, Roots, ScanOptions, Settings};
+use organizer_core::{execute, Journal, Progress, Roots, ScanOptions, Settings};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -28,8 +28,9 @@ impl Env {
             downloads: base.join("Downloads"),
             desktop: base.join("Desktop"),
             documents: base.join("Documents"),
+            extra: Vec::new(),
         };
-        for k in RootKind::ALL {
+        for k in roots.kinds() {
             fs::create_dir_all(roots.get(k)).unwrap();
         }
         let journal = Journal::new(base.join("appdata").join("journal.jsonl"));

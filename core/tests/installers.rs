@@ -3,7 +3,7 @@
 use organizer_core::installers::{find_installers, InstallerOptions};
 use organizer_core::remove::recycle_files;
 use organizer_core::safety::SkipReason;
-use organizer_core::{Journal, Progress, Recycler, RootKind, Roots, ScannedFile, Settings};
+use organizer_core::{Journal, Progress, Recycler, Roots, ScannedFile, Settings};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -27,8 +27,9 @@ impl Env {
             downloads: base.join("Downloads"),
             desktop: base.join("Desktop"),
             documents: base.join("Documents"),
+            extra: Vec::new(),
         };
-        for k in RootKind::ALL {
+        for k in roots.kinds() {
             fs::create_dir_all(roots.get(k)).unwrap();
         }
         let journal = Journal::new(base.join("appdata").join("journal.jsonl"));

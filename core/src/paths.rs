@@ -1,27 +1,34 @@
-//! The three roots (found with the Windows Known Folder API), the app-data
-//! folder and the list of places that must never be touched.
+//! The chosen folders ("roots"): Downloads, Desktop and Documents (found
+//! with the Windows Known Folder API) plus up to [`MAX_EXTRA`] extra folders
+//! from the settings; the app-data folder and the list of places that must
+//! never be touched.
 
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
 /// Desktop files are sent to `Documents\<this>\<Type>\<YYYY-MM>\`.
 pub const FROM_DESKTOP: &str = "From Desktop";
+/// Most extra folders a user can add.
+pub const MAX_EXTRA: usize = 10;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RootKind {
     Downloads,
     Desktop,
     Documents,
+    /// The n-th extra folder from the settings (0-based).
+    Extra(u8),
 }
 
 impl RootKind {
-    pub const ALL: [RootKind; 3] = [RootKind::Downloads, RootKind::Desktop, RootKind::Documents];
-
+    /// Short name for the three standard folders; extra folders are named
+    /// by [`Roots::label`].
     pub fn label(self) -> &'static str {
         match self {
             RootKind::Downloads => "Downloads",
             RootKind::Desktop => "Desktop",
             RootKind::Documents => "Documents",
+            RootKind::Extra(_) => "Extra folder",
         }
     }
 }
@@ -31,67 +38,191 @@ pub struct Roots {
     pub downloads: PathBuf,
     pub desktop: PathBuf,
     pub documents: PathBuf,
+    /// Extra folders (checked with [`check_extra`] before they get here,
+    /// and again by [`Roots::validate`] before every batch).
+    pub extra: Vec<PathBuf>,
 }
 
 impl Roots {
+    pub fn new(downloads: PathBuf, desktop: PathBuf, documents: PathBuf) -> Roots {
+        Roots { downloads, desktop, documents, extra: Vec::new() }
+    }
+
     /// The current user's Downloads, Desktop and Documents, asked from Windows
     /// (works when they are redirected, e.g. to OneDrive).
     pub fn from_system() -> io::Result<Roots> {
-        Ok(Roots {
-            downloads: sys::known_folder(sys::Folder::Downloads)?,
-            desktop: sys::known_folder(sys::Folder::Desktop)?,
-            documents: sys::known_folder(sys::Folder::Documents)?,
-        })
+        Ok(Roots::new(
+            sys::known_folder(sys::Folder::Downloads)?,
+            sys::known_folder(sys::Folder::Desktop)?,
+            sys::known_folder(sys::Folder::Documents)?,
+        ))
     }
 
+    /// Adds the extra folders that pass [`check_extra`]; the others are
+    /// dropped and one plain sentence per dropped folder is returned.
+    pub fn with_extra(mut self, folders: &[PathBuf]) -> (Roots, Vec<String>) {
+        let mut warnings = Vec::new();
+        self.extra.clear();
+        for f in folders {
+            match check_extra(&self, f) {
+                Ok(()) => self.extra.push(f.clone()),
+                Err(e) => warnings.push(format!("Extra folder left out: {e}")),
+            }
+        }
+        (self, warnings)
+    }
+
+    /// Every chosen folder: the three standard ones, then the extra ones.
+    pub fn kinds(&self) -> impl Iterator<Item = RootKind> + '_ {
+        [RootKind::Downloads, RootKind::Desktop, RootKind::Documents]
+            .into_iter()
+            .chain((0..self.extra.len().min(MAX_EXTRA)).map(|i| RootKind::Extra(i as u8)))
+    }
+
+    /// The folder of `kind` (an empty path for an extra folder that is not
+    /// in the list, which matches no file).
     pub fn get(&self, kind: RootKind) -> &Path {
         match kind {
             RootKind::Downloads => &self.downloads,
             RootKind::Desktop => &self.desktop,
             RootKind::Documents => &self.documents,
+            RootKind::Extra(i) => self.extra.get(i as usize).map(PathBuf::as_path).unwrap_or(Path::new("")),
+        }
+    }
+
+    /// Name shown to the user: "Downloads", ... or the extra folder's name.
+    pub fn label(&self, kind: RootKind) -> String {
+        match kind {
+            RootKind::Extra(_) => folder_label(self.get(kind)),
+            k => k.label().to_string(),
         }
     }
 
     /// Where the type folders for files from `kind` are created.
     pub fn target_base(&self, kind: RootKind) -> PathBuf {
         match kind {
-            RootKind::Downloads => self.downloads.clone(),
-            RootKind::Documents => self.documents.clone(),
             RootKind::Desktop => self.documents.join(FROM_DESKTOP),
+            k => self.get(k).to_path_buf(),
         }
     }
 
-    /// Refuse to work if any root is (inside) a protected system place.
-    /// Each root is also resolved to its final path (links and junctions
-    /// followed) and that path is checked too, so a junction cannot hide a
-    /// protected place.
+    /// Refuse to work if any root is (inside) a protected system place, or
+    /// if an extra folder no longer passes [`check_extra`]. Each root is
+    /// also resolved to its final path (links and junctions followed) and
+    /// that path is checked too, so a junction cannot hide a protected place.
     pub fn validate(&self) -> io::Result<()> {
-        for kind in RootKind::ALL {
+        if self.extra.len() > MAX_EXTRA {
+            return Err(io::Error::other(format!("More than {MAX_EXTRA} extra folders.")));
+        }
+        for kind in self.kinds() {
             let p = self.get(kind);
+            let label = self.label(kind);
             if !p.is_absolute() {
-                return Err(io::Error::other(format!("{} folder path is not absolute: {}", kind.label(), p.display())));
+                return Err(io::Error::other(format!("{label} folder path is not absolute: {}", p.display())));
             }
             let resolved = match final_path(p) {
                 Ok(r) => Some(r),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => None,
                 Err(e) => {
                     return Err(io::Error::other(format!(
-                        "{} folder cannot be opened ({e}), refusing to touch it: {}",
-                        kind.label(),
+                        "{label} folder cannot be opened ({e}), refusing to touch it: {}",
                         p.display()
                     )))
                 }
             };
             if is_protected(p) || resolved.as_deref().is_some_and(is_protected) {
                 return Err(io::Error::other(format!(
-                    "{} folder is in a protected system location, refusing to touch it: {}",
-                    kind.label(),
+                    "{label} folder is in a protected system location, refusing to touch it: {}",
                     p.display()
                 )));
             }
         }
+        for (i, f) in self.extra.iter().enumerate() {
+            let mut others = self.clone();
+            others.extra.truncate(i);
+            check_extra(&others, f).map_err(io::Error::other)?;
+            // Later extras are compared with this one when their turn comes.
+        }
         Ok(())
     }
+}
+
+/// "C:\Users\me\Projects" -> "Projects".
+pub fn folder_label(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string())
+}
+
+/// Why `folder` cannot be an extra folder next to `roots` (one plain
+/// sentence), or `Ok`. Checked when adding, when loading settings.json and
+/// before every batch.
+pub fn check_extra(roots: &Roots, folder: &Path) -> Result<(), String> {
+    let shown = folder.display();
+    if roots.extra.len() >= MAX_EXTRA {
+        return Err(format!("{shown}: you can add at most {MAX_EXTRA} extra folders."));
+    }
+    let text = folder.to_string_lossy();
+    if text.starts_with(r"\\") || text.starts_with("//") {
+        return Err(format!("{shown} is a network, device or \\\\?\\ path; only folders on this PC can be added."));
+    }
+    if !folder.is_absolute() || crate::fsops::has_dot_parts(folder) {
+        return Err(format!("{shown} is not a full folder path (like C:\\Users\\me\\Projects)."));
+    }
+    if is_protected(folder) {
+        return Err(format!(
+            "{shown} is a protected place (Windows, Program Files, AppData, your user folder itself or a whole drive)."
+        ));
+    }
+    if sys::is_network_drive(folder) {
+        return Err(format!("{shown} is on a network drive; only folders on this PC can be added."));
+    }
+    let meta = match std::fs::symlink_metadata(folder) {
+        Ok(m) => m,
+        Err(_) => return Err(format!("{shown} does not exist.")),
+    };
+    if meta.file_type().is_symlink() {
+        return Err(format!("{shown} is a link or junction to another place; add the real folder instead."));
+    }
+    if !meta.is_dir() {
+        return Err(format!("{shown} is not a folder."));
+    }
+    if crate::safety::is_hidden_or_system(folder, &meta) {
+        return Err(format!("{shown} is a hidden or system folder."));
+    }
+    let resolved = final_path(folder).map_err(|e| format!("{shown} cannot be opened ({e})."))?;
+    if is_protected(&resolved) {
+        return Err(format!(
+            "{shown} is a protected place (Windows, Program Files, AppData, your user folder itself or a whole drive)."
+        ));
+    }
+    let key = norm(&resolved);
+    if let Ok(app) = app_data_dir() {
+        let a = norm(&final_path(&app).unwrap_or(app));
+        if is_within(&key, &a) || is_within(&a, &key) {
+            return Err(format!("{shown} holds File Organizer's own settings and journal."));
+        }
+    }
+    if let Some(exe) = std::env::current_exe().ok().and_then(|e| final_path(&e).ok()) {
+        if exe.parent().is_some_and(|d| norm(d) == key) {
+            return Err(format!("{shown} is the folder File Organizer itself runs from."));
+        }
+    }
+    for kind in roots.kinds() {
+        let other = roots.get(kind);
+        let o = norm(&final_path(other).unwrap_or_else(|_| other.to_path_buf()));
+        if o.is_empty() {
+            continue;
+        }
+        if o == key {
+            return Err(format!("{shown} is already in the list ({}).", roots.label(kind)));
+        }
+        if is_within(&key, &o) {
+            return Err(format!("{shown} is inside {}, which is already in the list.", roots.label(kind)));
+        }
+        if is_within(&o, &key) {
+            return Err(format!("{shown} contains {}, which is already in the list.", roots.label(kind)));
+        }
+    }
+    Ok(())
 }
 
 /// `%APPDATA%\file-organizer` (settings and journal live here).
@@ -260,6 +391,20 @@ mod sys {
         Profile,
     }
 
+    /// True if the drive of `p` is a mapped network drive.
+    pub fn is_network_drive(p: &std::path::Path) -> bool {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+        const DRIVE_REMOTE: u32 = 4;
+        let Some(std::path::Component::Prefix(prefix)) = p.components().next() else {
+            return false;
+        };
+        let mut root: Vec<u16> = prefix.as_os_str().encode_wide().collect();
+        root.extend("\\\0".encode_utf16());
+        // SAFETY: NUL-terminated root path such as "Z:\".
+        unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_REMOTE }
+    }
+
     pub fn known_folder(f: Folder) -> io::Result<PathBuf> {
         let id: GUID = match f {
             Folder::Downloads => FOLDERID_Downloads,
@@ -315,6 +460,10 @@ mod sys {
         ProgramFilesCommon,
         ProgramData,
         Profile,
+    }
+
+    pub fn is_network_drive(_p: &std::path::Path) -> bool {
+        false
     }
 
     pub fn known_folder(f: Folder) -> io::Result<PathBuf> {

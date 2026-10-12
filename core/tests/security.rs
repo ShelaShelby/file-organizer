@@ -36,8 +36,9 @@ impl Env {
             downloads: base.join("Downloads"),
             desktop: base.join("Desktop"),
             documents: base.join("Documents"),
+            extra: Vec::new(),
         };
-        for k in RootKind::ALL {
+        for k in roots.kinds() {
             fs::create_dir_all(roots.get(k)).unwrap();
         }
         let journal = Journal::new(base.join("appdata").join("journal.jsonl"));
@@ -95,6 +96,10 @@ fn repo_file(rel: &str) -> String {
 /// A file sorted into Downloads\Images\<month>, plus a hand-made journal
 /// line claiming it came from `old`. Undo must refuse it.
 fn tampered_undo(env: &Env, old: &Path) -> organizer_core::BatchReport {
+    tampered_undo_says(env, old, "journal entry looks wrong")
+}
+
+fn tampered_undo_says(env: &Env, old: &Path, says: &str) -> organizer_core::BatchReport {
     let src = file(&env.roots.downloads, "x.jpg", b"img", days(30));
     let new = env.roots.downloads.join("Images").join(month_folder(mtime(&src))).join("x.jpg");
     fs::create_dir_all(new.parent().unwrap()).unwrap();
@@ -105,7 +110,7 @@ fn tampered_undo(env: &Env, old: &Path) -> organizer_core::BatchReport {
     assert!(report.moved.is_empty(), "{report:?}");
     assert!(new.is_file(), "file must stay where it is");
     assert!(!old.is_file());
-    assert!(report.skipped.iter().any(|(_, why)| why.contains("journal entry looks wrong")), "{report:?}");
+    assert!(report.skipped.iter().any(|(_, why)| why.contains(says)), "{report:?}");
     report
 }
 
@@ -139,7 +144,7 @@ fn undo_refuses_journal_paths_with_dot_dot() {
 #[test]
 fn undo_refuses_paths_outside_roots_root_itself_and_app_data() {
     let env = Env::new();
-    tampered_undo(&env, &env.base.join("elsewhere").join("x.jpg"));
+    tampered_undo_says(&env, &env.base.join("elsewhere").join("x.jpg"), "add the folder back in Settings");
     let env = Env::new();
     tampered_undo(&env, &env.roots.downloads); // the root itself
     let env = Env::new();
@@ -156,7 +161,7 @@ fn undo_refuses_tampered_new_path() {
     env.journal.append(&Record::Move(e)).unwrap();
     let r = env.journal.undo(7, &env.roots).unwrap();
     assert!(r.moved.is_empty() && outside.is_file() && !old.exists());
-    assert!(r.skipped[0].1.contains("journal entry looks wrong"));
+    assert!(r.skipped[0].1.contains("add the folder back in Settings"), "{r:?}");
 }
 
 #[cfg(windows)]

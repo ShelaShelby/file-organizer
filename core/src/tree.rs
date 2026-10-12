@@ -83,7 +83,7 @@ pub fn walk(
 ) -> io::Result<()> {
     roots.validate()?;
     let mut seen_dirs: HashSet<String> = HashSet::new();
-    for kind in RootKind::ALL {
+    for kind in roots.kinds() {
         let root = roots.get(kind).to_path_buf();
         let mut stack = vec![root.clone()];
         while let Some(dir) = stack.pop() {

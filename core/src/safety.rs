@@ -234,6 +234,12 @@ fn name_or_attr_reason(name: &str, meta: &Metadata) -> Option<SkipReason> {
     attr_reason(name, meta)
 }
 
+/// True for a hidden or system file or folder.
+pub fn is_hidden_or_system(path: &Path, meta: &Metadata) -> bool {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    matches!(attr_reason(&name, meta), Some(SkipReason::Hidden | SkipReason::System))
+}
+
 #[cfg(windows)]
 fn attr_reason(_name: &str, meta: &Metadata) -> Option<SkipReason> {
     use std::os::windows::fs::MetadataExt;

@@ -18,7 +18,7 @@ pub fn root_of(roots: &Roots, path: &Path) -> Result<RootKind, String> {
     if has_dot_parts(path) {
         return Err("path contains '..' or '.'".into());
     }
-    for kind in RootKind::ALL {
+    for kind in roots.kinds() {
         let root = roots.get(kind);
         let Ok(rest) = strip_prefix_ci(path, root) else {
             continue;
@@ -39,8 +39,11 @@ pub fn root_of(roots: &Roots, path: &Path) -> Result<RootKind, String> {
         }
         return Ok(kind);
     }
-    Err("not inside Downloads, Desktop or Documents".into())
+    Err("not inside a chosen folder".into())
 }
+
+/// Undo of a move in a folder that was removed from the extra folders.
+pub const NOT_IN_LIST: &str = "this folder is no longer in the list: add the folder back in Settings to undo this";
 
 /// Checks a path read from the journal before Undo uses it. Without any
 /// disk access: no `..` or `.` parts, absolute, not protected, not in the
@@ -64,7 +67,7 @@ pub fn journal_path_ok(roots: &Roots, path: &Path, app_dir: Option<&Path>) -> Re
             return Err(format!("app-data folder: {}", path.display()));
         }
     }
-    for kind in RootKind::ALL {
+    for kind in roots.kinds() {
         if let Ok(rest) = strip_prefix_ci(path, roots.get(kind)) {
             if rest.as_os_str().is_empty() {
                 return Err("is a chosen folder itself".into());
@@ -72,7 +75,7 @@ pub fn journal_path_ok(roots: &Roots, path: &Path, app_dir: Option<&Path>) -> Re
             return Ok(kind);
         }
     }
-    Err(format!("not inside a chosen folder: {}", path.display()))
+    Err(NOT_IN_LIST.into())
 }
 
 fn strip_prefix_ci<'a>(path: &'a Path, base: &Path) -> Result<&'a Path, ()> {

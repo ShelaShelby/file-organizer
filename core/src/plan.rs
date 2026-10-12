@@ -31,7 +31,9 @@ impl ScanOptions {
     pub fn min_age(&self, kind: RootKind) -> Duration {
         match kind {
             RootKind::Downloads => self.downloads_grace,
-            RootKind::Desktop | RootKind::Documents => Duration::from_secs(u64::from(self.recent_days) * 86_400),
+            RootKind::Desktop | RootKind::Documents | RootKind::Extra(_) => {
+                Duration::from_secs(u64::from(self.recent_days) * 86_400)
+            }
         }
     }
 }
@@ -67,7 +69,7 @@ pub fn scan(roots: &Roots, settings: &Settings, opts: &ScanOptions) -> io::Resul
     let mut plan = Plan::default();
     let mut taken: HashSet<String> = HashSet::new();
     let mut seen_roots: HashSet<String> = HashSet::new();
-    for kind in RootKind::ALL {
+    for kind in roots.kinds() {
         if !seen_roots.insert(path_key(roots.get(kind))) {
             continue; // two roots pointing at the same folder: scan once
         }

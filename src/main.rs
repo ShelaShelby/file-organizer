@@ -23,6 +23,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 mod icon;
 mod note;
+mod picker;
 mod tabs;
 #[cfg(windows)]
 mod tray;
@@ -211,6 +212,10 @@ pub struct App {
     settings_path: Option<PathBuf>,
     settings_open: bool,
     settings_draft: Settings,
+    /// Downloads, Desktop and Documents without extra folders.
+    base_roots: Option<Roots>,
+    /// Why the folder picked with "Add folder…" was refused.
+    folder_problem: Option<String>,
     pub journal: Option<Journal>,
     recycler: Arc<dyn Recycler>,
     // Sort tab
@@ -262,9 +267,18 @@ impl App {
                 (Settings::default(), None, None)
             }
         };
+        // Extra folders: a bad entry is dropped with a warning and never sorted.
+        let base_roots = roots;
+        let roots = base_roots.clone().map(|r| {
+            let (r, warnings) = r.with_extra(&settings.extra_folders);
+            problems.extend(warnings);
+            r
+        });
         let mut app = App {
             tab: Tab::Sort,
             roots,
+            base_roots,
+            folder_problem: None,
             settings_draft: settings.clone(),
             settings,
             settings_path,
@@ -289,6 +303,25 @@ impl App {
         };
         app.refresh_history();
         app
+    }
+
+    /// Rebuilds the chosen folders after the extra folders changed; old
+    /// scan results are dropped (they may name a folder no longer chosen).
+    fn apply_extra_folders(&mut self) {
+        let Some(base) = self.base_roots.clone() else { return };
+        let (roots, warnings) = base.with_extra(&self.settings.extra_folders);
+        if Some(&roots) != self.roots.as_ref() {
+            self.plan = None;
+            self.checked.clear();
+            self.dupes = None;
+            self.bigold = None;
+            self.renames = None;
+            self.rename_checked.clear();
+        }
+        self.roots = Some(roots);
+        if !warnings.is_empty() {
+            self.message = Some(warnings.join("\n"));
+        }
     }
 
     fn journal_stamp(&self) -> Option<SystemTime> {
@@ -636,12 +669,10 @@ impl App {
             }
         } else if self.job.is_none() && self.message.is_none() {
             if let Some(roots) = &self.roots {
-                ui.weak(format!(
-                    "Folders: {}   ·   {}   ·   {}",
-                    roots.downloads.display(),
-                    roots.desktop.display(),
-                    roots.documents.display()
-                ));
+                let names: Vec<String> = roots.kinds().map(|k| roots.label(k)).collect();
+                ui.weak(format!("Folders: {}", names.join("   ·   "))).on_hover_text(
+                    roots.kinds().map(|k| roots.get(k).display().to_string()).collect::<Vec<_>>().join("\n"),
+                );
             }
         }
         ui.add_space(4.0);
@@ -747,6 +778,38 @@ impl App {
                     ui.end_row();
                 });
                 ui.add_space(6.0);
+                ui.strong("Extra folders");
+                ui.weak("Sorted like Documents and included in Duplicates, Big and old and Rename.");
+                let mut remove = None;
+                for (i, f) in d.extra_folders.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        if ui.small_button("Remove").clicked() {
+                            remove = Some(i);
+                        }
+                        ui.add(egui::Label::new(f.display().to_string()).truncate());
+                    });
+                }
+                if let Some(i) = remove {
+                    d.extra_folders.remove(i);
+                    self.folder_problem = None;
+                }
+                let full = d.extra_folders.len() >= organizer_core::paths::MAX_EXTRA;
+                if ui.add_enabled(!full, egui::Button::new("Add folder…")).clicked() {
+                    if let (Some(base), Some(picked)) = (&self.base_roots, crate::picker::pick_folder()) {
+                        let (current, _) = base.clone().with_extra(&d.extra_folders);
+                        match organizer_core::paths::check_extra(&current, &picked) {
+                            Ok(()) => {
+                                d.extra_folders.push(picked);
+                                self.folder_problem = None;
+                            }
+                            Err(e) => self.folder_problem = Some(e),
+                        }
+                    }
+                }
+                if let Some(p) = &self.folder_problem {
+                    ui.add(egui::Label::new(egui::RichText::new(p).color(RED)).wrap());
+                }
+                ui.add_space(6.0);
                 use organizer_core::autostart::Status;
                 let mut autostart = self.autostart != Status::Off;
                 if ui.checkbox(&mut autostart, "Start with Windows (background sorting of Downloads)").changed() {
@@ -774,7 +837,8 @@ impl App {
                     save = ui.button("Save").clicked();
                     if ui.button("Defaults").clicked() {
                         let cats = std::mem::take(&mut d.categories);
-                        *d = Settings { categories: cats, ..Settings::default() };
+                        let extra = std::mem::take(&mut d.extra_folders);
+                        *d = Settings { categories: cats, extra_folders: extra, ..Settings::default() };
                     }
                 });
                 ui.weak("Takes effect on the next scan.");
@@ -795,6 +859,7 @@ impl App {
                         self.settings = saved;
                         self.settings_open = false;
                         self.message = None;
+                        self.apply_extra_folders();
                     }
                     Err(e) => self.message = Some(format!("Settings not saved: {e}")),
                 },
@@ -851,7 +916,7 @@ pub fn plural(n: usize, word: &str) -> String {
 
 /// "C:\Users\me\Downloads\Images\2026-10" -> "Downloads\Images\2026-10".
 pub fn short(dir: &Path, roots: &Roots) -> String {
-    for base in [&roots.downloads, &roots.desktop, &roots.documents] {
+    for base in roots.kinds().map(|k| roots.get(k)) {
         if let Some(name) = base.file_name() {
             if let Ok(rest) = dir.strip_prefix(base) {
                 if rest.as_os_str().is_empty() {

@@ -137,7 +137,7 @@ pub fn sort_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
                         .on_hover_text(m.source.display().to_string());
                 });
                 row.col(|ui| {
-                    ui.label(m.root.label());
+                    ui.label(roots.label(m.root));
                 });
                 row.col(|ui| {
                     ui.label(short(&m.target, roots)).on_hover_text(m.target.display().to_string());
