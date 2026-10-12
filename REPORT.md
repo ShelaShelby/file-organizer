@@ -29,13 +29,13 @@
   "renamed" and "background" batches and refreshes when the tray writes the journal.
 
 ## Tests
-- 97 tests on Windows in Actions: 35 stage 1 + 30 stage 2 + 31 stage 3 + 1 icon. Stage 3: each rename
+- 96 tests on Windows in Actions, all passing: 35 stage 1 + 29 stage 2 + 31 stage 3 + 1 icon. Stage 3: each rename
   pattern, single counter left, extension kept, invalid/reserved/empty names, target exists (case-
   insensitive), same-target proposals, file created/changed/gone/locked after scan, tampered proposals,
   hidden/temp/shortcut/recent skipped, Undo + Undo refused; auto-sort: two checks needed, too new, size
   changing, temp extensions, locked, paused (and saved), top level only, undo last auto-sort only; journal
   lock exclusive, parallel batches move each file once; Run value written, read and removed in HKCU.
-- Exe size: about 6 MB (exact number printed by the CI "Package" step).
+- Exe size: 6,037,504 bytes (~5.8 MB; stage 2 was 5,888,512).
 
 ## Known gaps
 - The tray icon, its menu and the `--note` popup were never seen on a real desktop: CI has no
