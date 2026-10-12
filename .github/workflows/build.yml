@@ -16,7 +16,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -37,7 +37,7 @@ jobs:
           Compress-Archive -Path dist/* -DestinationPath file-organizer.zip -Force
           "exe size: {0:N0} bytes" -f (Get-Item dist/file-organizer.exe).Length
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: file-organizer
           path: file-organizer.zip
