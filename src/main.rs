@@ -31,6 +31,13 @@ mod tray;
 
 pub const RED: egui::Color32 = egui::Color32::from_rgb(240, 120, 110);
 
+/// What kind of status-bar message: good news or a failure.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Notice {
+    Info,
+    Error,
+}
+
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -242,7 +249,7 @@ pub struct App {
     history_checked: Instant,
     autostart: organizer_core::autostart::Status,
     last: Option<(String, BatchReport)>,
-    pub message: Option<String>,
+    pub message: Option<(Notice, String)>,
     pub job: Option<Job>,
 }
 
@@ -302,7 +309,7 @@ impl App {
             history_checked: Instant::now(),
             autostart: organizer_core::autostart::status(),
             last: None,
-            message: (!problems.is_empty()).then(|| problems.join("\n")),
+            message: (!problems.is_empty()).then(|| (Notice::Error, problems.join("\n"))),
             job: None,
         };
         app.apply_theme(ctx, app.settings.theme);
@@ -329,7 +336,7 @@ impl App {
         }
         self.roots = Some(roots);
         if !warnings.is_empty() {
-            self.message = Some(warnings.join("\n"));
+            self.message = Some((Notice::Error, warnings.join("\n")));
         }
     }
 
@@ -354,7 +361,7 @@ impl App {
         if let Some(j) = &self.journal {
             match j.history() {
                 Ok(h) => self.history = h,
-                Err(e) => self.message = Some(format!("cannot read the journal: {e}")),
+                Err(e) => self.message = Some((Notice::Error, format!("cannot read the journal: {e}"))),
             }
         }
     }
@@ -487,15 +494,15 @@ impl App {
     pub fn start_background(&mut self) {
         let started = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg("--tray").spawn());
         self.message = Some(match started {
-            Ok(_) => "Background sorting is on: look for the File Organizer icon in the tray.".into(),
-            Err(e) => format!("Could not start background sorting: {e}"),
+            Ok(_) => (Notice::Info, "Background sorting is on: look for the File Organizer icon in the tray.".into()),
+            Err(e) => (Notice::Error, format!("Could not start background sorting: {e}")),
         });
     }
 
     fn set_autostart(&mut self, on: bool) {
         let r = std::env::current_exe().and_then(|exe| organizer_core::autostart::set_enabled(on, &exe));
         if let Err(e) = r {
-            self.message = Some(format!("Start with Windows could not be changed: {e}"));
+            self.message = Some((Notice::Error, format!("Start with Windows could not be changed: {e}")));
         }
         self.autostart = organizer_core::autostart::status();
     }
@@ -559,15 +566,24 @@ impl App {
                 self.refresh_history();
             }
             JobResult::Dupes(Err(e)) | JobResult::BigOld(Err(e)) | JobResult::Renames(Err(e)) if cancelled(&e) => {
-                self.message = Some("Scan cancelled.".into());
+                self.message = Some((Notice::Info, "Scan cancelled.".into()));
             }
             JobResult::Scanned(Err(e))
             | JobResult::Dupes(Err(e))
             | JobResult::BigOld(Err(e))
             | JobResult::Renames(Err(e))
-            | JobResult::Done(Err(e), _) => self.message = Some(e),
+            | JobResult::Done(Err(e), _) => self.message = Some((Notice::Error, e)),
         }
     }
+}
+
+/// One moved/renamed batch in History: text on top (wraps), a small Undo
+/// button on its own line below, so it never sticks out of the panel.
+/// Returns the Undo button.
+fn history_batch(ui: &mut egui::Ui, head: &str, body: &str, can_undo: bool) -> egui::Response {
+    ui.add(egui::Label::new(head).wrap());
+    ui.add(egui::Label::new(egui::RichText::new(body).weak()).wrap());
+    ui.add_enabled(can_undo, egui::Button::new("Undo").small())
 }
 
 impl eframe::App for App {
@@ -667,8 +683,11 @@ impl App {
                     p.cancel();
                 }
             }
-        } else if let Some(msg) = &self.message {
-            ui.colored_label(RED, msg);
+        } else if let Some((kind, msg)) = &self.message {
+            match kind {
+                Notice::Error => ui.add(egui::Label::new(egui::RichText::new(msg).color(RED)).wrap()),
+                Notice::Info => ui.add(egui::Label::new(msg.as_str()).wrap()),
+            };
         }
         if let Some((label, r)) = &self.last {
             let text = if label == "Renamed" {
@@ -718,6 +737,14 @@ impl App {
             )))
             .wrap(),
         );
+        if t.recycled_files > 0 {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("Restore them from the Recycle Bin (right-click → Restore).").weak(),
+                )
+                .wrap(),
+            );
+        }
         ui.label(format!("Tidied so far: {}", plural(t.tidied_files, "file")));
         ui.separator();
         let mut undo = None;
@@ -731,7 +758,6 @@ impl App {
                 if !b.recycled.is_empty() {
                     ui.label(time);
                     ui.weak(format!("{} sent to the Recycle Bin", plural(b.recycled.len(), "file")));
-                    ui.weak("Restore them from the Recycle Bin (right-click → Restore).");
                     egui::CollapsingHeader::new("Old places").id_salt(("rec", b.batch)).show(ui, |ui| {
                         for e in &b.recycled {
                             ui.add(egui::Label::new(egui::RichText::new(e.old.display().to_string()).small()).wrap());
@@ -740,27 +766,17 @@ impl App {
                     ui.separator();
                     continue;
                 }
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        let (what, who) = match b.tag.as_str() {
-                            TAG_RENAME => ("renamed", ""),
-                            TAG_AUTO => ("moved", " · background"),
-                            _ => ("moved", ""),
-                        };
-                        ui.label(format!("{time}{who}"));
-                        let left = b.remaining.len();
-                        if left == 0 {
-                            ui.weak(format!("{} {what} · undone", plural(b.total, "file")));
-                        } else {
-                            ui.weak(format!("{} {what} · {left} can be undone", plural(b.total, "file")));
-                        }
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add_enabled(!busy && !b.remaining.is_empty(), egui::Button::new("Undo")).clicked() {
-                            undo = Some(b.batch);
-                        }
-                    });
-                });
+                let (what, who) = match b.tag.as_str() {
+                    TAG_RENAME => ("renamed", ""),
+                    TAG_AUTO => ("moved", " · background"),
+                    _ => ("moved", ""),
+                };
+                let left = b.remaining.len();
+                let state = if left == 0 { "undone".to_string() } else { format!("{left} can be undone") };
+                let body = format!("{} {what} · {state}", plural(b.total, "file"));
+                if history_batch(ui, &format!("{time}{who}"), &body, !busy && left > 0).clicked() {
+                    undo = Some(b.batch);
+                }
                 ui.separator();
             }
         });
@@ -907,9 +923,9 @@ impl App {
                         self.message = None;
                         self.apply_extra_folders();
                     }
-                    Err(e) => self.message = Some(format!("Settings not saved: {e}")),
+                    Err(e) => self.message = Some((Notice::Error, format!("Settings not saved: {e}"))),
                 },
-                None => self.message = Some("Settings not saved: no app-data folder.".into()),
+                None => self.message = Some((Notice::Error, "Settings not saved: no app-data folder.".into())),
             }
         }
         if !open {
@@ -1040,5 +1056,41 @@ pub fn show_in_folder(path: &Path) -> std::io::Result<()> {
     {
         let dir = path.parent().unwrap_or(path);
         std::process::Command::new("xdg-open").arg(dir).spawn().map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_batch_stays_inside_narrow_and_default_panels() {
+        for width in [220.0, 280.0] {
+            let ctx = egui::Context::default();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 600.0))),
+                ..Default::default()
+            };
+            let (mut panel, mut text, mut undo) = (egui::Rect::NOTHING, egui::Rect::NOTHING, egui::Rect::NOTHING);
+            let mut out = ctx.run_ui(input, |ui| {
+                egui::Panel::right("h").exact_size(width).resizable(false).show(ui, |ui| {
+                    panel = ui.max_rect();
+                    let top = ui.cursor().min.y;
+                    undo =
+                        history_batch(ui, "2026-10-13 00:04 · background", "123 files moved · 123 can be undone", true)
+                            .rect;
+                    text = ui
+                        .min_rect()
+                        .intersect(egui::Rect::everything_above(undo.min.y))
+                        .intersect(egui::Rect::everything_below(top));
+                });
+            });
+            out.textures_delta.clear();
+            assert!(panel.width() <= width, "width {width}: panel {panel:?}");
+            assert!(panel.contains_rect(undo), "width {width}: Undo {undo:?} outside {panel:?}");
+            assert!(text.max.x <= panel.max.x + 0.5, "width {width}: text {text:?} outside {panel:?}");
+            assert!((undo.min.x - panel.min.x).abs() < 1.0, "width {width}: Undo not left aligned");
+            assert!(undo.min.y > text.min.y, "width {width}: Undo not below the text");
+        }
     }
 }

@@ -1,5 +1,4 @@
 # Report – Stage 4
-
 ## Part 1 – security
 - Undo checks both journal paths (no `..`/`.`, inside a current root, normal folders on the way, never
   protected or app data) and skips bad lines as "journal entry looks wrong". A torn journal line gets a
@@ -24,17 +23,18 @@
 - Up to 10 extra folders (native folder picker), sorted like Documents and included in Duplicates,
   Big and old and Rename; every refusal rule checked on add, load and in each batch. `RootKind::Extra(n)`
   and `Roots::kinds()` replace `RootKind::ALL`.
-- Theme (System/Dark/Light), Segoe UI fonts when present, plain-text buttons (no emoji icons), counts in
-  tab names, sortable File/Size/Last changed headers, Recycle Bin / tidied totals, per-folder summary,
-  two-row header and column widths checked against 760x420.
+- Theme (System/Dark/Light), Segoe UI fonts, plain-text buttons, tab counts, sortable File/Size/Last
+  changed headers, Recycle Bin / tidied totals, per-folder summary; widths checked against 760x420.
 
 ## Numbers
-- Tests: 172 on Windows in Actions, all passing (96 old + 76 new: security 36, extra 16, installers 9,
-  look 8, window 5, GUI layout/sort 2). Old stage-3 test adjusted for item 11 (closed file goes at next check).
+- Tests: 172 on Windows in Actions, all passing (96 old + 76 new); one stage-3 test adjusted for item 11.
 - Exe size: 6,106,624 bytes (stage 3: 6,037,504). zip SHA-256 is in the release notes.
 - cargo audit 0.22.2 (1307 advisories, 324 crates): no vulnerabilities, no warnings.
 
 ## Not checked (no interactive desktop in CI)
-- The real window, tray icon/menu, note popup position on a real monitor, the folder picker dialog,
-  bringing the window to the front, the theme switch and Segoe UI rendering: compile-checked and their
-  logic is unit-tested, but nobody has looked at them on screen.
+- Real window, tray, note popup, folder picker, bring-to-front, theme, Segoe UI: logic tested, not seen on screen.
+
+## Stage 4b
+- History: text wraps on top, small left-aligned Undo below it; tested inside 220 and 280 px panels.
+- Status bar: Info (normal text: background on, Scan cancelled) vs Error (red: could not…, not saved…).
+- Recycle Bin restore hint shown once under the totals; tab counts were already shown only after a scan.

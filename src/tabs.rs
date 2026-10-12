@@ -461,8 +461,8 @@ pub fn bigold_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     if let Some(f) = recycle {
         app.pending = Some(Pending::Files(vec![f]));
     }
-    if open_err.is_some() {
-        app.message = open_err;
+    if let Some(e) = open_err {
+        app.message = Some((crate::Notice::Error, e));
     }
 }
 
