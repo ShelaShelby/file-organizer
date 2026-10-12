@@ -42,9 +42,14 @@ fn main() -> eframe::Result {
         }
         _ => {}
     }
+    // One main window: a second start brings the open one to the front.
+    let _single = match single_window() {
+        Some(m) => m,
+        None => return Ok(()),
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("File Organizer")
+            .with_title(organizer_core::window::MAIN_TITLE)
             .with_inner_size([1150.0, 720.0])
             .with_min_inner_size([760.0, 420.0])
             .with_icon(icon::icon()),
@@ -55,6 +60,49 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),
     )
+}
+
+/// Holds the main-window mutex (`Some(None)` if Windows refused to create
+/// it: open anyway), or, if a window is already open, brings that window to
+/// the front and returns `None`. Sends it no data.
+fn single_window() -> Option<Option<organizer_core::window::MainMutex>> {
+    use organizer_core::window::{acquire_main_mutex, start_action, StartAction};
+    let Some(m) = acquire_main_mutex() else {
+        return Some(None);
+    };
+    let found = m.already_existed && find_main_window();
+    match start_action(m.already_existed, found) {
+        StartAction::Open => Some(Some(m)),
+        StartAction::BringToFront | StartAction::Exit => None,
+    }
+}
+
+/// Finds the main window by its exact title, restores and raises it.
+fn find_main_window() -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE,
+        };
+        let title: Vec<u16> = organizer_core::window::MAIN_TITLE
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: plain Win32 calls with a NUL-terminated title.
+        unsafe {
+            let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+            if hwnd.is_null() {
+                return false;
+            }
+            ShowWindow(hwnd, SW_RESTORE);
+            SetForegroundWindow(hwnd);
+        }
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

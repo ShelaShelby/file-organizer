@@ -21,13 +21,13 @@ use windows_sys::Win32::UI::Shell::{
     NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, LoadIconW, LoadImageW,
-    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
-    SetTimer, TrackPopupMenu, TranslateMessage, HICON, IDI_APPLICATION, IMAGE_ICON, MF_CHECKED,
-    MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP,
-    WM_CLOSE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
-    WS_OVERLAPPED,
+    AllowSetForegroundWindow, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+    DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics,
+    LoadIconW, LoadImageW, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
+    SetForegroundWindow, SetTimer, TrackPopupMenu, TranslateMessage, ASFW_ANY, HICON,
+    IDI_APPLICATION, IMAGE_ICON, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON,
+    SM_CYSMICON, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_DESTROY, WM_LBUTTONDBLCLK,
+    WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
 };
 
 const WM_TRAY: u32 = WM_APP + 1;
@@ -63,6 +63,9 @@ fn copy_into(dst: &mut [u16], s: &str) {
 }
 
 fn spawn_self(args: &[&str]) {
+    // Lets the started window (or an already open one) come to the front.
+    // SAFETY: no pointers involved.
+    unsafe { AllowSetForegroundWindow(ASFW_ANY) };
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::process::Command::new(exe).args(args).spawn();
     }

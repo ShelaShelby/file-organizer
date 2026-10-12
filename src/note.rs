@@ -104,32 +104,55 @@ impl eframe::App for Note {
     }
 }
 
-/// Bottom-right corner of the work area (above the taskbar), in points.
+/// Bottom-right corner of the primary monitor's work area (above the
+/// taskbar), in points, using that monitor's real DPI.
 fn corner_position() -> Option<egui::Pos2> {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Foundation::RECT;
-        use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
-        let mut r = RECT {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
+        use organizer_core::window::{note_position, PxRect};
+        use windows_sys::Win32::Foundation::{POINT, RECT};
+        use windows_sys::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
         };
-        // SAFETY: SPI_GETWORKAREA writes one RECT.
-        let ok =
-            unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut r as *mut RECT as *mut _, 0) };
-        if ok == 0 {
-            return None;
+        use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+        // SAFETY: plain Win32 calls; MONITORINFO has its size set.
+        unsafe {
+            let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+            if mon.is_null() {
+                return None;
+            }
+            let empty = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                rcMonitor: empty,
+                rcWork: empty,
+                dwFlags: 0,
+            };
+            if GetMonitorInfoW(mon, &mut info) == 0 {
+                return None;
+            }
+            let (mut dx, mut dy) = (0u32, 0u32);
+            let scale = if GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy) >= 0 && dx > 0
+            {
+                dx as f32 / 96.0
+            } else {
+                1.0
+            };
+            let w = info.rcWork;
+            let work = PxRect {
+                left: w.left,
+                top: w.top,
+                right: w.right,
+                bottom: w.bottom,
+            };
+            let (x, y) = note_position(work, scale, SIZE);
+            Some(egui::pos2(x, y))
         }
-        // SAFETY: no arguments.
-        let scale = unsafe { GetDpiForSystem() } as f32 / 96.0;
-        let scale = if scale > 0.0 { scale } else { 1.0 };
-        Some(egui::pos2(
-            r.right as f32 / scale - SIZE[0] - 16.0,
-            r.bottom as f32 / scale - SIZE[1] - 16.0,
-        ))
     }
     #[cfg(not(windows))]
     {
@@ -139,7 +162,7 @@ fn corner_position() -> Option<egui::Pos2> {
 
 pub fn run(batch: u64) -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("File Organizer")
+        .with_title(organizer_core::window::NOTE_TITLE)
         .with_inner_size(SIZE)
         .with_resizable(false)
         .with_decorations(false)

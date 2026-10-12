@@ -24,6 +24,7 @@ pub mod remove;
 pub mod rename;
 pub mod safety;
 pub mod tree;
+pub mod window;
 
 pub use config::Settings;
 pub use journal::{BatchReport, BatchSummary, Journal};
