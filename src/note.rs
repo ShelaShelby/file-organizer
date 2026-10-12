@@ -24,40 +24,21 @@ struct Note {
 
 impl Note {
     fn load(batch: u64) -> Note {
-        let journal = app_data_dir()
-            .ok()
-            .map(|d| Journal::new(d.join(JOURNAL_FILE)));
-        let summary = journal
-            .as_ref()
-            .and_then(|j| j.history().ok())
-            .and_then(|h| h.into_iter().find(|b| b.batch == batch));
+        let journal = app_data_dir().ok().map(|d| Journal::new(d.join(JOURNAL_FILE)));
+        let summary =
+            journal.as_ref().and_then(|j| j.history().ok()).and_then(|h| h.into_iter().find(|b| b.batch == batch));
         let roots = Roots::from_system().ok();
         let (text, can_undo) = match (&summary, &roots) {
             (Some(s), Some(r)) if !s.remaining.is_empty() => {
-                let moved: Vec<_> = s
-                    .remaining
-                    .iter()
-                    .map(|e| (e.old.clone(), e.new.clone()))
-                    .collect();
+                let moved: Vec<_> = s.remaining.iter().map(|e| (e.old.clone(), e.new.clone())).collect();
                 (note_text(r, &moved), true)
             }
-            (Some(s), _) if s.total > 0 => (
-                format!(
-                    "Undone: {} back in Downloads.",
-                    crate::plural(s.total, "file")
-                ),
-                false,
-            ),
+            (Some(s), _) if s.total > 0 => {
+                (format!("Undone: {} back in Downloads.", crate::plural(s.total, "file")), false)
+            }
             _ => ("Nothing to show.".to_string(), false),
         };
-        Note {
-            journal,
-            roots,
-            batch,
-            text,
-            can_undo,
-            close_at: Instant::now() + SHOW_FOR,
-        }
+        Note { journal, roots, batch, text, can_undo, close_at: Instant::now() + SHOW_FOR }
     }
 }
 
@@ -88,10 +69,7 @@ impl eframe::App for Note {
                 if let (Some(j), Some(roots)) = (&self.journal, &self.roots) {
                     self.text = match j.undo(self.batch, roots) {
                         Ok(r) if r.skipped.is_empty() && r.errors.is_empty() => {
-                            format!(
-                                "Undone: {} back in Downloads.",
-                                crate::plural(r.moved.len(), "file")
-                            )
+                            format!("Undone: {} back in Downloads.", crate::plural(r.moved.len(), "file"))
                         }
                         Ok(r) => format!("Undo: {}", r.summary()),
                         Err(e) => format!("Undo failed: {e}"),
@@ -121,12 +99,7 @@ fn corner_position() -> Option<egui::Pos2> {
             if mon.is_null() {
                 return None;
             }
-            let empty = RECT {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            };
+            let empty = RECT { left: 0, top: 0, right: 0, bottom: 0 };
             let mut info = MONITORINFO {
                 cbSize: std::mem::size_of::<MONITORINFO>() as u32,
                 rcMonitor: empty,
@@ -137,19 +110,13 @@ fn corner_position() -> Option<egui::Pos2> {
                 return None;
             }
             let (mut dx, mut dy) = (0u32, 0u32);
-            let scale = if GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy) >= 0 && dx > 0
-            {
+            let scale = if GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy) >= 0 && dx > 0 {
                 dx as f32 / 96.0
             } else {
                 1.0
             };
             let w = info.rcWork;
-            let work = PxRect {
-                left: w.left,
-                top: w.top,
-                right: w.right,
-                bottom: w.bottom,
-            };
+            let work = PxRect { left: w.left, top: w.top, right: w.right, bottom: w.bottom };
             let (x, y) = note_position(work, scale, SIZE);
             Some(egui::pos2(x, y))
         }
@@ -173,10 +140,7 @@ pub fn run(batch: u64) -> eframe::Result {
     if let Some(p) = corner_position() {
         viewport = viewport.with_position(p);
     }
-    let options = eframe::NativeOptions {
-        viewport,
-        ..Default::default()
-    };
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(
         "File Organizer note",
         options,

@@ -16,9 +16,7 @@ fn main() {
     let result = embed_resource::compile("assets/app.rc", embed_resource::NONE);
     // The real (MSVC) build must embed it; other targets may lack a resource compiler.
     if msvc {
-        result
-            .manifest_required()
-            .expect("could not embed the icon and manifest");
+        result.manifest_required().expect("could not embed the icon and manifest");
     } else if let Err(e) = result.manifest_optional() {
         println!("cargo:warning=icon not embedded: {e}");
     }

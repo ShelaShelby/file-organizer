@@ -16,6 +16,7 @@ pub mod bigold;
 pub mod config;
 pub mod dupes;
 pub mod fsops;
+pub mod installers;
 pub mod journal;
 pub mod paths;
 pub mod plan;

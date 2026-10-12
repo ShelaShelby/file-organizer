@@ -25,19 +25,13 @@ pub struct ScanOptions {
 
 impl ScanOptions {
     pub fn new(settings: &Settings, now: SystemTime) -> Self {
-        ScanOptions {
-            now,
-            recent_days: settings.recent_days,
-            downloads_grace: DOWNLOADS_GRACE,
-        }
+        ScanOptions { now, recent_days: settings.recent_days, downloads_grace: DOWNLOADS_GRACE }
     }
 
     pub fn min_age(&self, kind: RootKind) -> Duration {
         match kind {
             RootKind::Downloads => self.downloads_grace,
-            RootKind::Desktop | RootKind::Documents => {
-                Duration::from_secs(u64::from(self.recent_days) * 86_400)
-            }
+            RootKind::Desktop | RootKind::Documents => Duration::from_secs(u64::from(self.recent_days) * 86_400),
         }
     }
 }
@@ -137,30 +131,18 @@ pub fn scan_root_with(
                 let dir = target_dir(roots, kind, &category, modified);
                 let target = free_target(&dir, &name, taken);
                 taken.insert(path_key(&target));
-                plan.moves.push(PlannedMove {
-                    root: kind,
-                    source: path,
-                    target,
-                    category,
-                    size,
-                    modified,
-                });
+                plan.moves.push(PlannedMove { root: kind, source: path, target, category, size, modified });
             }
         }
     }
 }
 
 fn target_dir(roots: &Roots, kind: RootKind, category: &str, modified: SystemTime) -> PathBuf {
-    roots
-        .target_base(kind)
-        .join(category)
-        .join(month_folder(modified))
+    roots.target_base(kind).join(category).join(month_folder(modified))
 }
 
 fn file_name(p: &Path) -> String {
-    p.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default()
+    p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
 }
 
 /// The folder a planned move may go to. Nothing in `m` is trusted: the
@@ -186,12 +168,7 @@ fn checked_target_dir(roots: &Roots, m: &PlannedMove) -> Result<PathBuf, &'stati
 
 /// Carry out the moves the user confirmed. Each file is checked again just
 /// before it is moved; a problem with one file never stops the batch.
-pub fn execute(
-    roots: &Roots,
-    moves: &[PlannedMove],
-    journal: &Journal,
-    opts: &ScanOptions,
-) -> BatchReport {
+pub fn execute(roots: &Roots, moves: &[PlannedMove], journal: &Journal, opts: &ScanOptions) -> BatchReport {
     execute_tagged(roots, moves, journal, opts, "")
 }
 
@@ -208,17 +185,11 @@ pub fn execute_tagged(
         Ok(l) => l,
         Err(e) => {
             let mut report = BatchReport::default();
-            report.errors.push((
-                journal.path().to_path_buf(),
-                format!("journal is not available: {e}"),
-            ));
+            report.errors.push((journal.path().to_path_buf(), format!("journal is not available: {e}")));
             return report;
         }
     };
-    let mut report = BatchReport {
-        batch: journal.next_batch_id(),
-        ..Default::default()
-    };
+    let mut report = BatchReport { batch: journal.next_batch_id(), ..Default::default() };
     if let Err(e) = roots.validate() {
         report.errors.push((PathBuf::new(), e.to_string()));
         return report;
@@ -234,15 +205,11 @@ pub fn execute_tagged(
         match check_entry(&m.source, opts.min_age(m.root), opts.now) {
             Check::Ok { size, modified } if size == m.size && modified == m.modified => {}
             Check::Ok { .. } => {
-                report
-                    .skipped
-                    .push((m.source.clone(), SkipReason::Changed.to_string()));
+                report.skipped.push((m.source.clone(), SkipReason::Changed.to_string()));
                 continue;
             }
             Check::Folder => {
-                report
-                    .skipped
-                    .push((m.source.clone(), SkipReason::NotAFile.to_string()));
+                report.skipped.push((m.source.clone(), SkipReason::NotAFile.to_string()));
                 continue;
             }
             Check::Skip(r) => {
@@ -263,10 +230,7 @@ pub fn execute_tagged(
             // Without a journal line the move could not be undone: put it back.
             let msg = match crate::fsops::move_no_replace(&new, &m.source) {
                 Ok(()) => format!("journal could not be written ({e}); file left in place"),
-                Err(e2) => format!(
-                    "journal could not be written ({e}); file is now at {} ({e2})",
-                    new.display()
-                ),
+                Err(e2) => format!("journal could not be written ({e}); file is now at {} ({e2})", new.display()),
             };
             report.errors.push((m.source.clone(), msg));
             continue;

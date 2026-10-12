@@ -91,16 +91,7 @@ pub fn walk(
             if !seen_dirs.insert(path_key(&dir)) {
                 continue; // overlapping roots: each folder once
             }
-            if let Err(e) = walk_dir(
-                &dir,
-                dir != root,
-                kind,
-                now,
-                progress,
-                skipped,
-                &mut stack,
-                &mut found,
-            ) {
+            if let Err(e) = walk_dir(&dir, dir != root, kind, now, progress, skipped, &mut stack, &mut found) {
                 skipped.errors.push((dir, e.to_string()));
             }
         }
@@ -130,11 +121,8 @@ fn walk_dir(
         }
     }
     if is_sub {
-        let names: Vec<String> = paths
-            .iter()
-            .filter_map(|p| p.file_name())
-            .map(|n| n.to_string_lossy().to_string())
-            .collect();
+        let names: Vec<String> =
+            paths.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).collect();
         if let Some(r) = program_folder_reason(&names) {
             skipped.push(dir.to_path_buf(), r);
             return Ok(());
@@ -158,12 +146,7 @@ fn walk_dir(
             Check::Skip(r) => skipped.push(path, r),
             Check::Ok { size, modified } => {
                 progress.files.fetch_add(1, Ordering::Relaxed);
-                found(ScannedFile {
-                    root: kind,
-                    path,
-                    size,
-                    modified,
-                });
+                found(ScannedFile { root: kind, path, size, modified });
             }
         }
     }
@@ -174,7 +157,5 @@ fn walk_dir(
 
 /// "2026-10-12" (local time) for a last-changed time.
 pub fn date_text(t: SystemTime) -> String {
-    chrono::DateTime::<chrono::Local>::from(t)
-        .format("%Y-%m-%d")
-        .to_string()
+    chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d").to_string()
 }

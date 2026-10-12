@@ -11,8 +11,7 @@ use organizer_core::remove::{recycle_files, root_of};
 use organizer_core::rename::find_renames;
 use organizer_core::safety::SkipReason;
 use organizer_core::{
-    execute, scan, Journal, PlannedMove, Progress, Recycler, RootKind, Roots, ScanOptions,
-    ScannedFile, Settings,
+    execute, scan, Journal, PlannedMove, Progress, Recycler, RootKind, Roots, ScanOptions, ScannedFile, Settings,
 };
 use std::fs;
 use std::io;
@@ -31,10 +30,7 @@ impl Env {
     fn new() -> Env {
         let parent = Path::new(env!("CARGO_TARGET_TMPDIR"));
         fs::create_dir_all(parent).unwrap();
-        let tmp = tempfile::Builder::new()
-            .prefix("fo-s4")
-            .tempdir_in(parent)
-            .unwrap();
+        let tmp = tempfile::Builder::new().prefix("fo-s4").tempdir_in(parent).unwrap();
         let base = tmp.path().to_path_buf();
         let roots = Roots {
             downloads: base.join("Downloads"),
@@ -45,13 +41,7 @@ impl Env {
             fs::create_dir_all(roots.get(k)).unwrap();
         }
         let journal = Journal::new(base.join("appdata").join("journal.jsonl"));
-        Env {
-            _tmp: tmp,
-            base,
-            roots,
-            journal,
-            settings: Settings::default(),
-        }
+        Env { _tmp: tmp, base, roots, journal, settings: Settings::default() }
     }
 
     fn opts(&self) -> ScanOptions {
@@ -84,12 +74,7 @@ fn file(dir: &Path, name: &str, content: &[u8], age: Duration) -> PathBuf {
 }
 
 fn set_time(p: &Path, t: SystemTime) {
-    fs::OpenOptions::new()
-        .write(true)
-        .open(p)
-        .unwrap()
-        .set_modified(t)
-        .unwrap();
+    fs::OpenOptions::new().write(true).open(p).unwrap().set_modified(t).unwrap();
 }
 
 fn mtime(p: &Path) -> SystemTime {
@@ -98,12 +83,7 @@ fn mtime(p: &Path) -> SystemTime {
 
 fn scanned(root: RootKind, p: &Path) -> ScannedFile {
     let m = fs::metadata(p).unwrap();
-    ScannedFile {
-        root,
-        path: p.to_path_buf(),
-        size: m.len(),
-        modified: m.modified().unwrap(),
-    }
+    ScannedFile { root, path: p.to_path_buf(), size: m.len(), modified: m.modified().unwrap() }
 }
 
 fn repo_file(rel: &str) -> String {
@@ -116,12 +96,7 @@ fn repo_file(rel: &str) -> String {
 /// line claiming it came from `old`. Undo must refuse it.
 fn tampered_undo(env: &Env, old: &Path) -> organizer_core::BatchReport {
     let src = file(&env.roots.downloads, "x.jpg", b"img", days(30));
-    let new = env
-        .roots
-        .downloads
-        .join("Images")
-        .join(month_folder(mtime(&src)))
-        .join("x.jpg");
+    let new = env.roots.downloads.join("Images").join(month_folder(mtime(&src))).join("x.jpg");
     fs::create_dir_all(new.parent().unwrap()).unwrap();
     fs::rename(&src, &new).unwrap();
     let e = Entry::new(42, old, &new, 3, mtime(&new));
@@ -130,13 +105,7 @@ fn tampered_undo(env: &Env, old: &Path) -> organizer_core::BatchReport {
     assert!(report.moved.is_empty(), "{report:?}");
     assert!(new.is_file(), "file must stay where it is");
     assert!(!old.is_file());
-    assert!(
-        report
-            .skipped
-            .iter()
-            .any(|(_, why)| why.contains("journal entry looks wrong")),
-        "{report:?}"
-    );
+    assert!(report.skipped.iter().any(|(_, why)| why.contains("journal entry looks wrong")), "{report:?}");
     report
 }
 
@@ -152,17 +121,8 @@ fn undo_refuses_journal_pointing_at_windows_folder() {
 #[test]
 fn undo_refuses_journal_pointing_at_startup_folder() {
     let env = Env::new();
-    let roaming = organizer_core::paths::app_data_dir()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let startup = roaming
-        .join("Microsoft")
-        .join("Windows")
-        .join("Start Menu")
-        .join("Programs")
-        .join("Startup");
+    let roaming = organizer_core::paths::app_data_dir().unwrap().parent().unwrap().to_path_buf();
+    let startup = roaming.join("Microsoft").join("Windows").join("Start Menu").join("Programs").join("Startup");
     tampered_undo(&env, &startup.join("x.jpg"));
 }
 
@@ -206,12 +166,7 @@ fn undo_refuses_journal_through_junction() {
     let real = env.base.join("real");
     fs::create_dir_all(&real).unwrap();
     let j = env.roots.downloads.join("j");
-    let st = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(&j)
-        .arg(&real)
-        .status()
-        .unwrap();
+    let st = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&j).arg(&real).status().unwrap();
     assert!(st.success());
     tampered_undo(&env, &j.join("x.jpg"));
     fs::remove_dir(&j).unwrap();
@@ -222,12 +177,7 @@ fn normal_undo_still_works() {
     let env = Env::new();
     let src = file(&env.roots.desktop, "a.pdf", b"a", days(30));
     let plan = scan(&env.roots, &env.settings, &env.opts()).unwrap();
-    assert_eq!(
-        execute(&env.roots, &plan.moves, &env.journal, &env.opts())
-            .moved
-            .len(),
-        1
-    );
+    assert_eq!(execute(&env.roots, &plan.moves, &env.journal, &env.opts()).moved.len(), 1);
     let u = env.journal.undo_last(&env.roots).unwrap().unwrap();
     assert_eq!(u.moved.len(), 1, "{u:?}");
     assert!(src.is_file());
@@ -240,13 +190,7 @@ fn broken_last_journal_line_never_swallows_the_next_record() {
     let env = Env::new();
     fs::create_dir_all(env.journal.path().parent().unwrap()).unwrap();
     fs::write(env.journal.path(), "{\"kind\":\"move\",\"batch\":1,\"ti").unwrap(); // crash mid-line
-    let e = Entry::new(
-        5,
-        &env.roots.downloads.join("a"),
-        &env.roots.downloads.join("b"),
-        1,
-        SystemTime::now(),
-    );
+    let e = Entry::new(5, &env.roots.downloads.join("a"), &env.roots.downloads.join("b"), 1, SystemTime::now());
     env.journal.append(&Record::Move(e.clone())).unwrap();
     env.journal.append(&Record::Move(e)).unwrap();
     assert_eq!(env.journal.records().unwrap().len(), 2);
@@ -265,12 +209,7 @@ fn settings_saved_atomically_without_leftovers() {
     assert!(warn.is_none());
     Settings::update(&path, |s| s.recent_days = 9).unwrap();
     assert!(!path.with_extension("json.tmp").exists());
-    assert_eq!(
-        Settings::from_json(&fs::read_to_string(&path).unwrap())
-            .0
-            .recent_days,
-        9
-    );
+    assert_eq!(Settings::from_json(&fs::read_to_string(&path).unwrap()).0.recent_days, 9);
     assert_eq!(s.recent_days, 7);
 }
 
@@ -324,68 +263,27 @@ fn tampered_planned_moves_are_refused() {
     let good = planned(&env, &src);
     let outside = env.base.join("X");
     let tampered = [
-        PlannedMove {
-            target: env.roots.downloads.join("..").join("X").join("x.txt"),
-            ..good.clone()
-        },
-        PlannedMove {
-            target: good.target.parent().unwrap().join("..").join("x.txt"),
-            ..good.clone()
-        },
-        PlannedMove {
-            target: env.roots.downloads.join("Documents").join("x.txt"),
-            ..good.clone()
-        },
-        PlannedMove {
-            target: outside.join("x.txt"),
-            ..good.clone()
-        },
+        PlannedMove { target: env.roots.downloads.join("..").join("X").join("x.txt"), ..good.clone() },
+        PlannedMove { target: good.target.parent().unwrap().join("..").join("x.txt"), ..good.clone() },
+        PlannedMove { target: env.roots.downloads.join("Documents").join("x.txt"), ..good.clone() },
+        PlannedMove { target: outside.join("x.txt"), ..good.clone() },
         PlannedMove {
             category: "..".into(),
             target: env.roots.downloads.join("..").join("2020-01").join("x.txt"),
             ..good.clone()
         },
-        PlannedMove {
-            category: "CON".into(),
-            ..good.clone()
-        },
-        PlannedMove {
-            source: env
-                .roots
-                .downloads
-                .join("..")
-                .join("Downloads")
-                .join("x.txt"),
-            ..good.clone()
-        },
-        PlannedMove {
-            root: RootKind::Documents,
-            ..good.clone()
-        },
+        PlannedMove { category: "CON".into(), ..good.clone() },
+        PlannedMove { source: env.roots.downloads.join("..").join("Downloads").join("x.txt"), ..good.clone() },
+        PlannedMove { root: RootKind::Documents, ..good.clone() },
     ];
     for t in &tampered {
-        let r = execute(
-            &env.roots,
-            std::slice::from_ref(t),
-            &env.journal,
-            &env.opts(),
-        );
+        let r = execute(&env.roots, std::slice::from_ref(t), &env.journal, &env.opts());
         assert!(r.moved.is_empty() && r.errors.len() == 1, "{t:?} -> {r:?}");
         assert!(src.is_file());
     }
     assert!(!outside.exists());
     // The untouched plan still works.
-    assert_eq!(
-        execute(
-            &env.roots,
-            std::slice::from_ref(&good),
-            &env.journal,
-            &env.opts()
-        )
-        .moved
-        .len(),
-        1
-    );
+    assert_eq!(execute(&env.roots, std::slice::from_ref(&good), &env.journal, &env.opts()).moved.len(), 1);
     assert!(good.target.is_file());
 }
 
@@ -404,32 +302,13 @@ fn planned_target_compared_ignoring_case() {
 
 #[test]
 fn category_names_can_never_be_device_names() {
-    for bad in [
-        "CON",
-        "nul",
-        "Com1",
-        "LPT9",
-        "aux.txt",
-        "PRN ",
-        "x.",
-        "a:b",
-        "..",
-        ".",
-        "",
-        &"n".repeat(300),
-    ] {
+    for bad in ["CON", "nul", "Com1", "LPT9", "aux.txt", "PRN ", "x.", "a:b", "..", ".", "", &"n".repeat(300)] {
         assert_eq!(safe_folder_name(bad), OTHER, "{bad:?}");
     }
     assert_eq!(safe_folder_name(" Pictures "), "Pictures");
     assert_eq!(safe_folder_name("COM0"), "COM0");
     let mut s = Settings::default();
-    s.categories.insert(
-        0,
-        Category {
-            name: "NUL".into(),
-            extensions: vec!["jpg".into()],
-        },
-    );
+    s.categories.insert(0, Category { name: "NUL".into(), extensions: vec!["jpg".into()] });
     assert_eq!(s.category_for("a.jpg"), OTHER);
 }
 
@@ -439,20 +318,10 @@ fn category_names_can_never_be_device_names() {
 fn protected_places_do_not_come_from_environment_variables() {
     let env = Env::new();
     assert!(!is_protected(&env.roots.downloads));
-    for var in [
-        "ProgramFiles",
-        "SystemRoot",
-        "windir",
-        "ProgramData",
-        "APPDATA",
-        "LOCALAPPDATA",
-    ] {
+    for var in ["ProgramFiles", "SystemRoot", "windir", "ProgramData", "APPDATA", "LOCALAPPDATA"] {
         std::env::set_var(var, &env.base);
     }
-    assert!(
-        !is_protected(&env.roots.downloads),
-        "a changed variable must not matter"
-    );
+    assert!(!is_protected(&env.roots.downloads), "a changed variable must not matter");
     assert!(env.roots.validate().is_ok());
 }
 
@@ -463,21 +332,10 @@ fn user_profile_itself_is_protected_but_not_folders_inside() {
     assert!(!is_protected(&home.join("Downloads")));
     #[cfg(windows)]
     {
-        for p in [
-            r"C:\",
-            r"C:\Windows\System32",
-            r"C:\Program Files\Common Files\x",
-            r"C:\ProgramData",
-        ] {
+        for p in [r"C:\", r"C:\Windows\System32", r"C:\Program Files\Common Files\x", r"C:\ProgramData"] {
             assert!(is_protected(Path::new(p)), "{p}");
         }
-        let local = organizer_core::paths::app_data_dir()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("Local");
+        let local = organizer_core::paths::app_data_dir().unwrap().parent().unwrap().parent().unwrap().join("Local");
         assert!(is_protected(&local.join("Temp")));
     }
 }
@@ -488,18 +346,10 @@ fn junction_root_to_windows_folder_is_refused() {
     let env = Env::new();
     let j = env.base.join("innocent");
     let win = organizer_core::paths::windows_dir().unwrap();
-    let st = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(&j)
-        .arg(&win)
-        .status()
-        .unwrap();
+    let st = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&j).arg(&win).status().unwrap();
     assert!(st.success());
     assert!(!is_protected(&j), "the name alone looks harmless");
-    let roots = Roots {
-        downloads: j.clone(),
-        ..env.roots.clone()
-    };
+    let roots = Roots { downloads: j.clone(), ..env.roots.clone() };
     assert!(roots.validate().is_err());
     assert!(scan(&roots, &env.settings, &env.opts()).is_err());
     fs::remove_dir(&j).unwrap(); // removes only the junction
@@ -519,13 +369,7 @@ fn final_path_strips_verbatim_prefix() {
 fn exe_roots(env: &Env) -> (Roots, PathBuf) {
     let exe = std::env::current_exe().unwrap();
     let dir = exe.parent().unwrap().to_path_buf();
-    (
-        Roots {
-            downloads: dir,
-            ..env.roots.clone()
-        },
-        exe,
-    )
+    (Roots { downloads: dir, ..env.roots.clone() }, exe)
 }
 
 #[test]
@@ -534,11 +378,7 @@ fn running_exe_is_never_sorted_moved_or_recycled() {
     let (roots, exe) = exe_roots(&env);
     let plan = scan(&roots, &env.settings, &env.opts()).unwrap();
     assert!(plan.moves.iter().all(|m| m.source != exe));
-    let why = plan
-        .skipped
-        .iter()
-        .find(|(p, _)| *p == exe)
-        .map(|(_, r)| r.clone());
+    let why = plan.skipped.iter().find(|(p, _)| *p == exe).map(|(_, r)| r.clone());
     assert_eq!(why, Some(SkipReason::SelfApp));
     assert_eq!(SkipReason::SelfApp.to_string(), "File Organizer itself");
     // A hand-made plan for it is refused at the re-check.
@@ -546,11 +386,7 @@ fn running_exe_is_never_sorted_moved_or_recycled() {
     let fake = PlannedMove {
         root: RootKind::Downloads,
         source: exe.clone(),
-        target: roots
-            .downloads
-            .join("Other")
-            .join(month_folder(m))
-            .join(exe.file_name().unwrap()),
+        target: roots.downloads.join("Other").join(month_folder(m)).join(exe.file_name().unwrap()),
         category: "Other".into(),
         size: fs::metadata(&exe).unwrap().len(),
         modified: m,
@@ -576,10 +412,7 @@ fn running_exe_is_left_alone_by_walking_scans() {
     let old = SystemTime::now() + days(1); // nothing counts as "recent"
     let mut found = Vec::new();
     let mut skipped = organizer_core::tree::Skipped::default();
-    organizer_core::tree::walk(&roots, old, &Progress::default(), &mut skipped, |f| {
-        found.push(f.path)
-    })
-    .unwrap();
+    organizer_core::tree::walk(&roots, old, &Progress::default(), &mut skipped, |f| found.push(f.path)).unwrap();
     assert!(!found.is_empty() && !found.contains(&exe));
     assert_eq!(
         organizer_core::safety::check_entry_unlocked(&exe, Duration::ZERO, old),
@@ -588,10 +421,7 @@ fn running_exe_is_left_alone_by_walking_scans() {
     // A copy (another file) is a normal file.
     let copy = env.base.join(exe.file_name().unwrap());
     fs::copy(&exe, &copy).unwrap();
-    assert!(!organizer_core::paths::is_self_exe(
-        &copy,
-        fs::metadata(&copy).unwrap().len()
-    ));
+    assert!(!organizer_core::paths::is_self_exe(&copy, fs::metadata(&copy).unwrap().len()));
 }
 
 // ---------------------------------------------------------------- 8. program and project folders
@@ -599,16 +429,9 @@ fn running_exe_is_left_alone_by_walking_scans() {
 fn left_alone_as_program(env: &Env, folder: &Path) {
     let inside = file(folder, "Copy of notes.txt", b"n", days(30));
     let r = find_renames(&env.roots, SystemTime::now(), &Progress::default()).unwrap();
+    assert!(r.items.iter().all(|i| i.file.path != inside), "{}", folder.display());
     assert!(
-        r.items.iter().all(|i| i.file.path != inside),
-        "{}",
-        folder.display()
-    );
-    assert!(
-        r.skipped
-            .items
-            .iter()
-            .any(|(p, why)| p == folder && *why == SkipReason::ProgramFolder),
+        r.skipped.items.iter().any(|(p, why)| p == folder && *why == SkipReason::ProgramFolder),
         "{}: {:?}",
         folder.display(),
         r.skipped.items
@@ -629,10 +452,7 @@ fn program_and_tool_folder_names_are_never_entered() {
 #[test]
 fn folders_with_project_markers_are_never_entered() {
     let env = Env::new();
-    let mut markers: Vec<String> = organizer_core::safety::PROJECT_MARKERS
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut markers: Vec<String> = organizer_core::safety::PROJECT_MARKERS.iter().map(|s| s.to_string()).collect();
     markers.push("App.sln".into());
     markers.push("Tool.csproj".into());
     for (i, m) in markers.iter().enumerate() {
@@ -680,18 +500,11 @@ fn project_rules_do_not_block_the_chosen_folder_itself() {
 fn dup_pair(env: &Env) -> (PathBuf, PathBuf, GroupChoice) {
     let a = file(&env.roots.downloads, "a.bin", &[7u8; 5000], days(20));
     let b = file(&env.roots.documents, "b.bin", &[7u8; 5000], days(10));
-    let scan = find_duplicates(
-        &env.roots,
-        &DupOptions::new(&env.settings, SystemTime::now()),
-        &Progress::default(),
-    )
-    .unwrap();
+    let scan =
+        find_duplicates(&env.roots, &DupOptions::new(&env.settings, SystemTime::now()), &Progress::default()).unwrap();
     assert_eq!(scan.groups.len(), 1);
     let g = &scan.groups[0];
-    let choice = GroupChoice {
-        files: g.files.clone(),
-        keep: g.default_keep(),
-    };
+    let choice = GroupChoice { files: g.files.clone(), keep: g.default_keep() };
     assert_eq!(choice.files[0].path, a);
     (a, b, choice)
 }
@@ -722,13 +535,7 @@ fn kept_copy_changed_secretly_also_refuses() {
     let env = Env::new();
     let (a, b, choice) = dup_pair(&env);
     change_secretly(&a);
-    let r = remove_duplicates(
-        &env.roots,
-        &[choice],
-        &env.journal,
-        &TestBin(env.base.join("bin")),
-        SystemTime::now(),
-    );
+    let r = remove_duplicates(&env.roots, &[choice], &env.journal, &TestBin(env.base.join("bin")), SystemTime::now());
     assert!(r.recycled.is_empty() && a.is_file() && b.is_file(), "{r:?}");
 }
 
@@ -736,13 +543,7 @@ fn kept_copy_changed_secretly_also_refuses() {
 fn unchanged_duplicate_still_goes() {
     let env = Env::new();
     let (a, b, choice) = dup_pair(&env);
-    let r = remove_duplicates(
-        &env.roots,
-        &[choice],
-        &env.journal,
-        &TestBin(env.base.join("bin")),
-        SystemTime::now(),
-    );
+    let r = remove_duplicates(&env.roots, &[choice], &env.journal, &TestBin(env.base.join("bin")), SystemTime::now());
     assert_eq!(r.recycled, vec![b.clone()]);
     assert!(a.is_file() && !b.exists());
 }
@@ -753,13 +554,7 @@ fn duplicate_that_cannot_be_opened_exclusively_is_refused() {
     let env = Env::new();
     let (a, b, choice) = dup_pair(&env);
     let h = fs::File::open(&a).unwrap(); // kept copy in use
-    let r = remove_duplicates(
-        &env.roots,
-        &[choice],
-        &env.journal,
-        &TestBin(env.base.join("bin")),
-        SystemTime::now(),
-    );
+    let r = remove_duplicates(&env.roots, &[choice], &env.journal, &TestBin(env.base.join("bin")), SystemTime::now());
     drop(h);
     assert!(r.recycled.is_empty() && b.is_file(), "{r:?}");
 }
@@ -786,10 +581,7 @@ fn explorer_is_started_by_full_path() {
     assert!(main.contains("windows_dir()?.join(\"explorer.exe\")"));
     assert!(!main.contains("Command::new(\"explorer.exe\")"));
     #[cfg(windows)]
-    assert!(organizer_core::paths::windows_dir()
-        .unwrap()
-        .join("explorer.exe")
-        .is_file());
+    assert!(organizer_core::paths::windows_dir().unwrap().join("explorer.exe").is_file());
 }
 
 #[test]
@@ -825,10 +617,7 @@ fn background_sorter_opens_files_only_once_they_are_stable() {
     let h = fs::File::open(&p).unwrap();
     let mut s = AutoSorter::new();
     assert!(tick(&mut s, &env).is_empty());
-    assert!(
-        tick(&mut s, &env).is_empty(),
-        "locked file must not be picked"
-    );
+    assert!(tick(&mut s, &env).is_empty(), "locked file must not be picked");
     drop(h);
     assert_eq!(tick(&mut s, &env).len(), 1);
 }
@@ -839,14 +628,8 @@ fn background_sorter_opens_files_only_once_they_are_stable() {
 fn autostart_shows_which_copy_it_starts() {
     let env = Env::new();
     let exe = std::env::current_exe().unwrap();
-    assert_eq!(
-        exe_in_command(&format!("\"{}\" --tray", exe.display())),
-        Some(exe.clone())
-    );
-    assert_eq!(
-        exe_in_command(r"C:\x\a.exe --tray"),
-        Some(PathBuf::from(r"C:\x\a.exe"))
-    );
+    assert_eq!(exe_in_command(&format!("\"{}\" --tray", exe.display())), Some(exe.clone()));
+    assert_eq!(exe_in_command(r"C:\x\a.exe --tray"), Some(PathBuf::from(r"C:\x\a.exe")));
     assert_eq!(status_for(None, &exe), Status::Off);
     let cmd = organizer_core::autostart::command_for(&exe);
     assert_eq!(status_for(Some(&cmd), &exe), Status::ThisCopy(exe.clone()));
@@ -863,28 +646,12 @@ fn autostart_shows_which_copy_it_starts() {
 #[test]
 fn ci_actions_pinned_and_permissions_split() {
     let ci = repo_file(".github/workflows/build.yml");
-    let uses: Vec<&str> = ci
-        .lines()
-        .filter_map(|l| {
-            l.trim()
-                .strip_prefix("- uses:")
-                .or(l.trim().strip_prefix("uses:"))
-        })
-        .collect();
+    let uses: Vec<&str> =
+        ci.lines().filter_map(|l| l.trim().strip_prefix("- uses:").or(l.trim().strip_prefix("uses:"))).collect();
     assert!(uses.len() >= 4);
     for u in uses {
-        let sha = u
-            .trim()
-            .split('@')
-            .nth(1)
-            .unwrap_or("")
-            .split_whitespace()
-            .next()
-            .unwrap_or("");
-        assert!(
-            sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()),
-            "not pinned: {u}"
-        );
+        let sha = u.trim().split('@').nth(1).unwrap_or("").split_whitespace().next().unwrap_or("");
+        assert!(sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()), "not pinned: {u}");
         assert!(u.contains('#'), "tag comment missing: {u}");
     }
     assert!(ci.contains("contents: read") && ci.contains("contents: write"));

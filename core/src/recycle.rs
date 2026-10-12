@@ -40,13 +40,13 @@ mod sys {
     use windows::core::{implement, ComObject, Ref, Result as WinResult, HRESULT, HSTRING, PCWSTR};
     use windows::Win32::Foundation::E_ABORT;
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+        COINIT_DISABLE_OLE1DDE,
     };
     use windows::Win32::UI::Shell::{
-        FileOperation, IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl,
-        IShellItem, SHCreateItemFromParsingName, FOFX_EARLYFAILURE, FOFX_RECYCLEONDELETE,
-        FOF_ALLOWUNDO, FOF_NO_UI, SIGDN_FILESYSPATH, TSF_DELETE_RECYCLE_IF_POSSIBLE,
+        FileOperation, IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem,
+        SHCreateItemFromParsingName, FOFX_EARLYFAILURE, FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO, FOF_NO_UI,
+        SIGDN_FILESYSPATH, TSF_DELETE_RECYCLE_IF_POSSIBLE,
     };
 
     #[implement(IFileOperationProgressSink)]
@@ -64,13 +64,7 @@ mod sys {
             }
             Ok(())
         }
-        fn PostDeleteItem(
-            &self,
-            _f: u32,
-            _i: Ref<IShellItem>,
-            hr: HRESULT,
-            created: Ref<IShellItem>,
-        ) -> WinResult<()> {
+        fn PostDeleteItem(&self, _f: u32, _i: Ref<IShellItem>, hr: HRESULT, created: Ref<IShellItem>) -> WinResult<()> {
             *self.result.borrow_mut() = hr;
             if let Some(item) = created.as_ref() {
                 // SAFETY: documented call; the returned string is freed below.
@@ -104,13 +98,7 @@ mod sys {
         ) -> WinResult<()> {
             Ok(())
         }
-        fn PreMoveItem(
-            &self,
-            _: u32,
-            _: Ref<IShellItem>,
-            _: Ref<IShellItem>,
-            _: &PCWSTR,
-        ) -> WinResult<()> {
+        fn PreMoveItem(&self, _: u32, _: Ref<IShellItem>, _: Ref<IShellItem>, _: &PCWSTR) -> WinResult<()> {
             Ok(())
         }
         fn PostMoveItem(
@@ -124,13 +112,7 @@ mod sys {
         ) -> WinResult<()> {
             Ok(())
         }
-        fn PreCopyItem(
-            &self,
-            _: u32,
-            _: Ref<IShellItem>,
-            _: Ref<IShellItem>,
-            _: &PCWSTR,
-        ) -> WinResult<()> {
+        fn PreCopyItem(&self, _: u32, _: Ref<IShellItem>, _: Ref<IShellItem>, _: &PCWSTR) -> WinResult<()> {
             Ok(())
         }
         fn PostCopyItem(
@@ -187,17 +169,10 @@ mod sys {
     pub fn recycle(path: &Path) -> io::Result<Option<PathBuf>> {
         // SAFETY: documented COM calls; all interfaces are released by Drop.
         unsafe {
-            let _com = Com(
-                CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok(),
-            );
-            let item: IShellItem =
-                SHCreateItemFromParsingName(&HSTRING::from(path.as_os_str()), None).map_err(err)?;
-            let op: IFileOperation =
-                CoCreateInstance(&FileOperation, None, CLSCTX_ALL).map_err(err)?;
-            op.SetOperationFlags(
-                FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOFX_EARLYFAILURE,
-            )
-            .map_err(err)?;
+            let _com = Com(CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok());
+            let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(path.as_os_str()), None).map_err(err)?;
+            let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL).map_err(err)?;
+            op.SetOperationFlags(FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOFX_EARLYFAILURE).map_err(err)?;
             let g = ComObject::new(Guard {
                 refused: RefCell::new(false),
                 new_place: RefCell::new(None),
@@ -207,10 +182,7 @@ mod sys {
             let cookie = op.Advise(&sink).map_err(err)?;
             op.DeleteItem(&item, None).map_err(err)?;
             let performed = op.PerformOperations();
-            let aborted = op
-                .GetAnyOperationsAborted()
-                .map(|b| b.as_bool())
-                .unwrap_or(true);
+            let aborted = op.GetAnyOperationsAborted().map(|b| b.as_bool()).unwrap_or(true);
             let _ = op.Unadvise(cookie);
             if *g.refused.borrow() {
                 return Err(io::Error::other(
@@ -226,9 +198,7 @@ mod sys {
                 )));
             }
             if path.symlink_metadata().is_ok() {
-                return Err(io::Error::other(
-                    "the file is still there after sending it to the Recycle Bin",
-                ));
+                return Err(io::Error::other("the file is still there after sending it to the Recycle Bin"));
             }
             let place = g.new_place.borrow().clone();
             Ok(place)
@@ -246,9 +216,6 @@ mod sys {
     use std::path::{Path, PathBuf};
 
     pub fn recycle(_path: &Path) -> io::Result<Option<PathBuf>> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "the Recycle Bin is only available on Windows",
-        ))
+        Err(io::Error::new(io::ErrorKind::Unsupported, "the Recycle Bin is only available on Windows"))
     }
 }

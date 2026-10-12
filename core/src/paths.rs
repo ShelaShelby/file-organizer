@@ -69,11 +69,7 @@ impl Roots {
         for kind in RootKind::ALL {
             let p = self.get(kind);
             if !p.is_absolute() {
-                return Err(io::Error::other(format!(
-                    "{} folder path is not absolute: {}",
-                    kind.label(),
-                    p.display()
-                )));
+                return Err(io::Error::other(format!("{} folder path is not absolute: {}", kind.label(), p.display())));
             }
             let resolved = match final_path(p) {
                 Ok(r) => Some(r),
@@ -188,18 +184,11 @@ fn protected_places() -> &'static Protected {
             }
         }
         if cfg!(windows) {
-            for p in [
-                r"C:\Windows",
-                r"C:\Program Files",
-                r"C:\Program Files (x86)",
-                r"C:\ProgramData",
-            ] {
+            for p in [r"C:\Windows", r"C:\Program Files", r"C:\Program Files (x86)", r"C:\ProgramData"] {
                 dirs.push(PathBuf::from(p));
             }
         }
-        let profile = sys::known_folder(Profile)
-            .ok()
-            .filter(|p| !p.as_os_str().is_empty());
+        let profile = sys::known_folder(Profile).ok().filter(|p| !p.as_os_str().is_empty());
         Protected { dirs, profile }
     })
 }
@@ -217,11 +206,7 @@ fn self_exe() -> Option<&'static SelfExe> {
         let exe = final_path(&std::env::current_exe().ok()?).ok()?;
         let name = exe.file_name()?.to_string_lossy().to_lowercase();
         let len = std::fs::metadata(&exe).ok()?.len();
-        Some(SelfExe {
-            name,
-            len,
-            key: crate::fsops::path_key(&exe),
-        })
+        Some(SelfExe { name, len, key: crate::fsops::path_key(&exe) })
     })
     .as_ref()
 }
@@ -232,12 +217,8 @@ pub fn is_self_exe(path: &Path, len: u64) -> bool {
     let Some(me) = self_exe() else {
         return false;
     };
-    let same_name = path
-        .file_name()
-        .is_some_and(|n| n.to_string_lossy().to_lowercase() == me.name);
-    same_name
-        && len == me.len
-        && final_path(path).is_ok_and(|p| crate::fsops::path_key(&p) == me.key)
+    let same_name = path.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase() == me.name);
+    same_name && len == me.len && final_path(path).is_ok_and(|p| crate::fsops::path_key(&p) == me.key)
 }
 
 /// Lower-cased path with `\` separators and no trailing separator.
@@ -259,10 +240,9 @@ mod sys {
     use windows_sys::core::{GUID, PWSTR};
     use windows_sys::Win32::System::Com::CoTaskMemFree;
     use windows_sys::Win32::UI::Shell::{
-        FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_LocalAppData,
-        FOLDERID_Profile, FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesCommon,
-        FOLDERID_ProgramFilesX86, FOLDERID_RoamingAppData, FOLDERID_System, FOLDERID_Windows,
-        SHGetKnownFolderPath, KF_FLAG_DEFAULT,
+        FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_LocalAppData, FOLDERID_Profile,
+        FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesCommon, FOLDERID_ProgramFilesX86,
+        FOLDERID_RoamingAppData, FOLDERID_System, FOLDERID_Windows, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
     };
 
     pub enum Folder {
@@ -297,9 +277,7 @@ mod sys {
         };
         let mut out: PWSTR = std::ptr::null_mut();
         // SAFETY: documented API; `out` is freed with CoTaskMemFree in all cases.
-        let hr = unsafe {
-            SHGetKnownFolderPath(&id, KF_FLAG_DEFAULT as u32, std::ptr::null_mut(), &mut out)
-        };
+        let hr = unsafe { SHGetKnownFolderPath(&id, KF_FLAG_DEFAULT as u32, std::ptr::null_mut(), &mut out) };
         let result = if hr >= 0 && !out.is_null() {
             let mut len = 0usize;
             // SAFETY: on success `out` is a valid NUL-terminated wide string.
@@ -307,14 +285,10 @@ mod sys {
                 while *out.add(len) != 0 {
                     len += 1;
                 }
-                Ok(PathBuf::from(OsString::from_wide(
-                    std::slice::from_raw_parts(out, len),
-                )))
+                Ok(PathBuf::from(OsString::from_wide(std::slice::from_raw_parts(out, len))))
             }
         } else {
-            Err(io::Error::other(format!(
-                "Windows could not find a known folder (error 0x{hr:08X})"
-            )))
+            Err(io::Error::other(format!("Windows could not find a known folder (error 0x{hr:08X})")))
         };
         // SAFETY: freeing null is allowed.
         unsafe { CoTaskMemFree(out as *const _) };
@@ -344,9 +318,7 @@ mod sys {
     }
 
     pub fn known_folder(f: Folder) -> io::Result<PathBuf> {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .ok_or_else(|| io::Error::other("HOME not set"))?;
+        let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| io::Error::other("HOME not set"))?;
         match f {
             Folder::Downloads => Ok(home.join("Downloads")),
             Folder::Desktop => Ok(home.join("Desktop")),
@@ -354,10 +326,7 @@ mod sys {
             Folder::RoamingAppData => Ok(home.join(".config")),
             Folder::LocalAppData => Ok(home.join(".local")),
             Folder::Profile => Ok(home),
-            _ => Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "not on this system",
-            )),
+            _ => Err(io::Error::new(io::ErrorKind::NotFound, "not on this system")),
         }
     }
 }

@@ -57,11 +57,7 @@ pub fn status_for(command: Option<&str>, current_exe: &Path) -> Status {
     let Some(target) = exe_in_command(cmd) else {
         return Status::OtherCopy(PathBuf::from(cmd));
     };
-    let key = |p: &Path| {
-        crate::paths::final_path(p)
-            .ok()
-            .map(|f| crate::fsops::path_key(&f))
-    };
+    let key = |p: &Path| crate::paths::final_path(p).ok().map(|f| crate::fsops::path_key(&f));
     match (key(&target), key(current_exe)) {
         (Some(a), Some(b)) if a == b => Status::ThisCopy(target),
         _ => Status::OtherCopy(target),
@@ -83,8 +79,8 @@ mod sys {
     use std::io;
     use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegGetValueW, RegSetValueExW, HKEY,
-        HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
+        RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegGetValueW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+        KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
     };
 
     fn wide(s: &str) -> Vec<u16> {
@@ -168,10 +164,7 @@ mod sys {
 mod sys {
     use std::io;
     fn no() -> io::Error {
-        io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Start with Windows only works on Windows",
-        )
+        io::Error::new(io::ErrorKind::Unsupported, "Start with Windows only works on Windows")
     }
     pub fn set(_name: &str, _data: &str) -> io::Result<()> {
         Err(no())

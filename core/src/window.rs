@@ -45,11 +45,7 @@ pub fn start_action(mutex_already_existed: bool, window_found: bool) -> StartAct
 /// area in pixels) with a [`NOTE_MARGIN_PX`] margin, at DPI scale `scale`
 /// (1.0 = 100 %). The popup always lies fully inside the work area.
 pub fn note_position(work: PxRect, scale: f32, size_points: [f32; 2]) -> (f32, f32) {
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
     let w = (size_points[0] * scale).ceil() as i32;
     let h = (size_points[1] * scale).ceil() as i32;
     let x = (work.right - NOTE_MARGIN_PX - w).max(work.left);
@@ -88,10 +84,7 @@ impl Drop for MainMutex {
 pub fn acquire_main_mutex() -> Option<MainMutex> {
     use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
     use windows_sys::Win32::System::Threading::CreateMutexW;
-    let name: Vec<u16> = MAIN_MUTEX
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
+    let name: Vec<u16> = MAIN_MUTEX.encode_utf16().chain(std::iter::once(0)).collect();
     // SAFETY: valid NUL-terminated name; the handle is closed by Drop.
     let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
     if handle.is_null() {
@@ -99,15 +92,10 @@ pub fn acquire_main_mutex() -> Option<MainMutex> {
     }
     // SAFETY: no arguments; read right after CreateMutexW.
     let already_existed = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
-    Some(MainMutex {
-        handle,
-        already_existed,
-    })
+    Some(MainMutex { handle, already_existed })
 }
 
 #[cfg(not(windows))]
 pub fn acquire_main_mutex() -> Option<MainMutex> {
-    Some(MainMutex {
-        already_existed: false,
-    })
+    Some(MainMutex { already_existed: false })
 }

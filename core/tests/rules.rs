@@ -24,10 +24,7 @@ impl Env {
     fn new() -> Env {
         let parent = Path::new(env!("CARGO_TARGET_TMPDIR"));
         fs::create_dir_all(parent).unwrap();
-        let tmp = tempfile::Builder::new()
-            .prefix("fo-test")
-            .tempdir_in(parent)
-            .unwrap();
+        let tmp = tempfile::Builder::new().prefix("fo-test").tempdir_in(parent).unwrap();
         let base = tmp.path().to_path_buf();
         let roots = Roots {
             downloads: base.join("Downloads"),
@@ -38,13 +35,7 @@ impl Env {
             fs::create_dir_all(roots.get(k)).unwrap();
         }
         let journal = Journal::new(base.join("appdata").join("journal.jsonl"));
-        Env {
-            _tmp: tmp,
-            base,
-            roots,
-            journal,
-            settings: Settings::default(),
-        }
+        Env { _tmp: tmp, base, roots, journal, settings: Settings::default() }
     }
 
     fn opts(&self) -> ScanOptions {
@@ -83,17 +74,11 @@ fn mtime(p: &Path) -> SystemTime {
 }
 
 fn planned_sources(plan: &organizer_core::Plan) -> Vec<String> {
-    plan.moves
-        .iter()
-        .map(|m| m.source.file_name().unwrap().to_string_lossy().to_string())
-        .collect()
+    plan.moves.iter().map(|m| m.source.file_name().unwrap().to_string_lossy().to_string()).collect()
 }
 
 fn skip_reason(plan: &organizer_core::Plan, name: &str) -> Option<SkipReason> {
-    plan.skipped
-        .iter()
-        .find(|(p, _)| p.file_name().unwrap() == name)
-        .map(|(_, r)| r.clone())
+    plan.skipped.iter().find(|(p, _)| p.file_name().unwrap() == name).map(|(_, r)| r.clone())
 }
 
 // ---------------------------------------------------------------- layout
@@ -105,12 +90,7 @@ fn downloads_sorted_by_type_then_month() {
     let month = month_folder(mtime(&src));
     let report = env.run_all();
     assert_eq!(report.moved.len(), 1, "{report:?}");
-    let want = env
-        .roots
-        .downloads
-        .join("Images")
-        .join(&month)
-        .join("photo.JPG");
+    let want = env.roots.downloads.join("Images").join(&month).join("photo.JPG");
     assert!(want.is_file());
     assert!(!src.exists());
     assert_eq!(fs::read_to_string(want).unwrap(), "img");
@@ -122,13 +102,7 @@ fn documents_sorted_inside_documents() {
     let src = file(&env.roots.documents, "notes.txt", "n", days(30));
     let month = month_folder(mtime(&src));
     env.run_all();
-    assert!(env
-        .roots
-        .documents
-        .join("Documents")
-        .join(month)
-        .join("notes.txt")
-        .is_file());
+    assert!(env.roots.documents.join("Documents").join(month).join("notes.txt").is_file());
 }
 
 #[test]
@@ -137,13 +111,7 @@ fn desktop_goes_to_documents_from_desktop() {
     let src = file(&env.roots.desktop, "report.pdf", "r", days(30));
     let month = month_folder(mtime(&src));
     let plan = env.scan();
-    let want = env
-        .roots
-        .documents
-        .join(FROM_DESKTOP)
-        .join("Documents")
-        .join(&month)
-        .join("report.pdf");
+    let want = env.roots.documents.join(FROM_DESKTOP).join("Documents").join(&month).join("report.pdf");
     assert_eq!(plan.moves[0].target, want);
     let report = execute(&env.roots, &plan.moves, &env.journal, &env.opts());
     assert_eq!(report.moved.len(), 1);
@@ -171,11 +139,7 @@ fn every_type_folder_and_other() {
     }
     let plan = env.scan();
     for (n, cat) in cases {
-        let m = plan
-            .moves
-            .iter()
-            .find(|m| m.source.file_name().unwrap() == n)
-            .unwrap();
+        let m = plan.moves.iter().find(|m| m.source.file_name().unwrap() == n).unwrap();
         assert_eq!(m.category, cat, "{n}");
         assert!(m.target.starts_with(env.roots.downloads.join(cat)));
     }
@@ -186,25 +150,10 @@ fn month_folder_uses_last_changed_date() {
     use chrono::{Local, TimeZone};
     let env = Env::new();
     let p = file(&env.roots.downloads, "old.zip", "z", days(1));
-    let t: SystemTime = Local
-        .with_ymd_and_hms(2024, 3, 15, 12, 0, 0)
-        .unwrap()
-        .into();
-    fs::OpenOptions::new()
-        .write(true)
-        .open(&p)
-        .unwrap()
-        .set_modified(t)
-        .unwrap();
+    let t: SystemTime = Local.with_ymd_and_hms(2024, 3, 15, 12, 0, 0).unwrap().into();
+    fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(t).unwrap();
     let plan = env.scan();
-    assert_eq!(
-        plan.moves[0].target,
-        env.roots
-            .downloads
-            .join("Archives")
-            .join("2024-03")
-            .join("old.zip")
-    );
+    assert_eq!(plan.moves[0].target, env.roots.downloads.join("Archives").join("2024-03").join("old.zip"));
 }
 
 // ---------------------------------------------------------------- age rules
@@ -228,27 +177,14 @@ fn age_rule_uses_setting() {
     let mut env = Env::new();
     env.settings.recent_days = 2;
     file(&env.roots.desktop, "three_days.txt", "x", days(3));
-    assert_eq!(
-        planned_sources(&env.scan()),
-        vec!["three_days.txt".to_string()]
-    );
+    assert_eq!(planned_sources(&env.scan()), vec!["three_days.txt".to_string()]);
 }
 
 #[test]
 fn age_rule_downloads_two_minutes() {
     let env = Env::new();
-    file(
-        &env.roots.downloads,
-        "just_now.pdf",
-        "x",
-        Duration::from_secs(30),
-    );
-    file(
-        &env.roots.downloads,
-        "five_min.pdf",
-        "x",
-        Duration::from_secs(300),
-    );
+    file(&env.roots.downloads, "just_now.pdf", "x", Duration::from_secs(30));
+    file(&env.roots.downloads, "five_min.pdf", "x", Duration::from_secs(300));
     let plan = env.scan();
     assert_eq!(planned_sources(&plan), vec!["five_min.pdf".to_string()]);
     assert_eq!(skip_reason(&plan, "just_now.pdf"), Some(SkipReason::Recent));
@@ -258,12 +194,7 @@ fn age_rule_downloads_two_minutes() {
 fn future_dates_are_treated_as_recent() {
     let env = Env::new();
     let p = file(&env.roots.downloads, "future.txt", "x", days(0));
-    fs::OpenOptions::new()
-        .write(true)
-        .open(&p)
-        .unwrap()
-        .set_modified(SystemTime::now() + days(5))
-        .unwrap();
+    fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(SystemTime::now() + days(5)).unwrap();
     assert!(env.scan().moves.is_empty());
 }
 
@@ -294,10 +225,7 @@ fn skips_temp_downloading_shortcut_and_desktop_ini() {
     let plan = env.scan();
     assert_eq!(skip_reason(&plan, "Chrome.lnk"), Some(SkipReason::Shortcut));
     assert_eq!(skip_reason(&plan, "y.tmp"), Some(SkipReason::Temporary));
-    assert_eq!(
-        skip_reason(&plan, "~$report.docx"),
-        Some(SkipReason::Temporary)
-    );
+    assert_eq!(skip_reason(&plan, "~$report.docx"), Some(SkipReason::Temporary));
 }
 
 #[test]
@@ -321,12 +249,7 @@ fn only_loose_files_are_accepted_by_execute() {
     let fake = PlannedMove {
         root: RootKind::Downloads,
         source: inner.clone(),
-        target: env
-            .roots
-            .downloads
-            .join("Images")
-            .join("2020-01")
-            .join("x.jpg"),
+        target: env.roots.downloads.join("Images").join("2020-01").join("x.jpg"),
         category: "Images".into(),
         size: 1,
         modified: mtime(&inner),
@@ -365,11 +288,7 @@ fn hidden_files_skipped_unix() {
 
 #[cfg(windows)]
 fn attrib(flag: &str, p: &Path) {
-    let st = std::process::Command::new("attrib")
-        .arg(flag)
-        .arg(p)
-        .status()
-        .unwrap();
+    let st = std::process::Command::new("attrib").arg(flag).arg(p).status().unwrap();
     assert!(st.success());
 }
 
@@ -398,10 +317,7 @@ fn locked_files_skipped_windows() {
     let handle = fs::File::open(&p).unwrap();
     let plan = env.scan();
     assert!(plan.moves.is_empty());
-    assert!(matches!(
-        skip_reason(&plan, "open.docx"),
-        Some(SkipReason::InUse(_))
-    ));
+    assert!(matches!(skip_reason(&plan, "open.docx"), Some(SkipReason::InUse(_))));
     drop(handle);
     assert_eq!(env.scan().moves.len(), 1);
 }
@@ -430,12 +346,7 @@ fn junctions_are_skipped_and_untouched_windows() {
     fs::create_dir_all(&real).unwrap();
     let inside = file(&real, "keep.jpg", "x", days(30));
     let j = env.roots.documents.join("My Pictures");
-    let st = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(&j)
-        .arg(&real)
-        .status()
-        .unwrap();
+    let st = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&j).arg(&real).status().unwrap();
     assert!(st.success());
     let report = env.run_all();
     assert!(report.moved.is_empty());
@@ -484,14 +395,9 @@ fn protected_locations_are_refused() {
             assert!(is_protected(Path::new(p)), "{p}");
         }
         let appdata = PathBuf::from(std::env::var_os("APPDATA").unwrap()).join("fo-test-root");
-        let roots = Roots {
-            downloads: appdata,
-            ..env.roots.clone()
-        };
+        let roots = Roots { downloads: appdata, ..env.roots.clone() };
         assert!(scan(&roots, &env.settings, &env.opts()).is_err());
-        assert!(!execute(&roots, &[], &env.journal, &env.opts())
-            .errors
-            .is_empty());
+        assert!(!execute(&roots, &[], &env.journal, &env.opts()).errors.is_empty());
     }
     let mut roots = env.roots.clone();
     roots.desktop = PathBuf::from("relative");
@@ -520,14 +426,8 @@ fn name_collision_in_scan_and_on_disk() {
     assert_eq!(plan.moves[0].target, dir.join("photo (2).jpg"));
     let report = execute(&env.roots, &plan.moves, &env.journal, &env.opts());
     assert_eq!(report.moved.len(), 1);
-    assert_eq!(
-        fs::read_to_string(dir.join("photo.jpg")).unwrap(),
-        "existing"
-    );
-    assert_eq!(
-        fs::read_to_string(dir.join("photo (2).jpg")).unwrap(),
-        "new"
-    );
+    assert_eq!(fs::read_to_string(dir.join("photo.jpg")).unwrap(), "existing");
+    assert_eq!(fs::read_to_string(dir.join("photo (2).jpg")).unwrap(), "new");
 }
 
 #[test]
@@ -590,12 +490,7 @@ fn unchecked_rows_are_not_moved() {
     let a = file(&env.roots.downloads, "a.txt", "x", days(30));
     let b = file(&env.roots.downloads, "b.txt", "x", days(30));
     let plan = env.scan();
-    let chosen: Vec<_> = plan
-        .moves
-        .iter()
-        .filter(|m| m.source == a)
-        .cloned()
-        .collect();
+    let chosen: Vec<_> = plan.moves.iter().filter(|m| m.source == a).cloned().collect();
     execute(&env.roots, &chosen, &env.journal, &env.opts());
     assert!(!a.exists() && b.is_file());
 }
@@ -611,10 +506,7 @@ fn journal_records_old_new_and_time() {
     let line: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
     assert_eq!(line["kind"], "move");
     assert_eq!(PathBuf::from(line["old"].as_str().unwrap()), src);
-    assert_eq!(
-        PathBuf::from(line["new"].as_str().unwrap()),
-        report.moved[0].1
-    );
+    assert_eq!(PathBuf::from(line["new"].as_str().unwrap()), report.moved[0].1);
     assert!(line["time"].as_str().unwrap().len() > 10);
 }
 
@@ -626,10 +518,7 @@ fn undo_restores_everything_exactly() {
         file(&env.roots.desktop, "b.pdf", "B", days(30)),
         file(&env.roots.documents, "c.mp3", "C", days(40)),
     ];
-    let before: Vec<_> = files
-        .iter()
-        .map(|p| (fs::read(p).unwrap(), mtime(p)))
-        .collect();
+    let before: Vec<_> = files.iter().map(|p| (fs::read(p).unwrap(), mtime(p))).collect();
     let report = env.run_all();
     assert_eq!(report.moved.len(), 3);
     assert!(files.iter().all(|p| !p.exists()));
@@ -664,10 +553,7 @@ fn undo_skips_changed_file_and_taken_spot() {
     assert_eq!(undo.moved.len(), 1);
     assert_eq!(undo.skipped.len(), 2);
     assert_eq!(fs::read_to_string(new_of(&a)).unwrap(), "edited after move");
-    assert_eq!(
-        fs::read_to_string(&b).unwrap(),
-        "someone put a new file here"
-    );
+    assert_eq!(fs::read_to_string(&b).unwrap(), "someone put a new file here");
     assert_eq!(fs::read_to_string(new_of(&b)).unwrap(), "B");
     assert_eq!(fs::read_to_string(&c).unwrap(), "C");
     assert_eq!(env.journal.history().unwrap()[0].remaining.len(), 2);
@@ -689,12 +575,7 @@ fn undo_older_batch_from_history() {
     assert!(first.is_file());
     assert!(!second.exists());
     // Undoing the same batch again does nothing.
-    assert!(env
-        .journal
-        .undo(older, &env.roots)
-        .unwrap()
-        .moved
-        .is_empty());
+    assert!(env.journal.undo(older, &env.roots).unwrap().moved.is_empty());
 }
 
 #[test]
@@ -726,10 +607,9 @@ fn settings_created_with_defaults_and_editable() {
 
     let mut edited = s.clone();
     edited.recent_days = 14;
-    edited.categories.push(organizer_core::config::Category {
-        name: "Ebooks".into(),
-        extensions: vec![".EPUB".into()],
-    });
+    edited
+        .categories
+        .push(organizer_core::config::Category { name: "Ebooks".into(), extensions: vec![".EPUB".into()] });
     edited.save(&path).unwrap();
     let (s2, _) = Settings::load_or_create(&path);
     assert_eq!(s2.recent_days, 14);
@@ -750,23 +630,14 @@ fn broken_settings_file_is_not_overwritten() {
 #[test]
 fn unsafe_category_names_fall_back_to_other() {
     let mut s = Settings::default();
-    s.categories.insert(
-        0,
-        organizer_core::config::Category {
-            name: "..\\..\\Windows".into(),
-            extensions: vec!["jpg".into()],
-        },
-    );
+    s.categories
+        .insert(0, organizer_core::config::Category { name: "..\\..\\Windows".into(), extensions: vec!["jpg".into()] });
     assert_eq!(s.category_for("a.jpg"), "Other");
 }
 
 #[test]
 fn check_entry_reports_folder() {
     let env = Env::new();
-    let c = organizer_core::safety::check_entry(
-        &env.roots.downloads,
-        Duration::ZERO,
-        SystemTime::now(),
-    );
+    let c = organizer_core::safety::check_entry(&env.roots.downloads, Duration::ZERO, SystemTime::now());
     assert_eq!(c, Check::Folder);
 }

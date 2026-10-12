@@ -41,11 +41,7 @@ fn from_ico(d: &[u8], size: usize) -> Option<IconData> {
                 rgba[(y * size + x) * 4..][..4].copy_from_slice(&[r, g, b, a]);
             }
         }
-        return Some(IconData {
-            rgba,
-            width: size as u32,
-            height: size as u32,
-        });
+        return Some(IconData { rgba, width: size as u32, height: size as u32 });
     }
     None
 }
