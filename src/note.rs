@@ -15,6 +15,7 @@ const SHOW_FOR: Duration = Duration::from_secs(10);
 
 struct Note {
     journal: Option<Journal>,
+    roots: Option<Roots>,
     batch: u64,
     text: String,
     can_undo: bool,
@@ -23,21 +24,40 @@ struct Note {
 
 impl Note {
     fn load(batch: u64) -> Note {
-        let journal = app_data_dir().ok().map(|d| Journal::new(d.join(JOURNAL_FILE)));
-        let summary =
-            journal.as_ref().and_then(|j| j.history().ok()).and_then(|h| h.into_iter().find(|b| b.batch == batch));
+        let journal = app_data_dir()
+            .ok()
+            .map(|d| Journal::new(d.join(JOURNAL_FILE)));
+        let summary = journal
+            .as_ref()
+            .and_then(|j| j.history().ok())
+            .and_then(|h| h.into_iter().find(|b| b.batch == batch));
         let roots = Roots::from_system().ok();
         let (text, can_undo) = match (&summary, &roots) {
             (Some(s), Some(r)) if !s.remaining.is_empty() => {
-                let moved: Vec<_> = s.remaining.iter().map(|e| (e.old.clone(), e.new.clone())).collect();
+                let moved: Vec<_> = s
+                    .remaining
+                    .iter()
+                    .map(|e| (e.old.clone(), e.new.clone()))
+                    .collect();
                 (note_text(r, &moved), true)
             }
-            (Some(s), _) if s.total > 0 => {
-                (format!("Undone: {} back in Downloads.", crate::plural(s.total, "file")), false)
-            }
+            (Some(s), _) if s.total > 0 => (
+                format!(
+                    "Undone: {} back in Downloads.",
+                    crate::plural(s.total, "file")
+                ),
+                false,
+            ),
             _ => ("Nothing to show.".to_string(), false),
         };
-        Note { journal, batch, text, can_undo, close_at: Instant::now() + SHOW_FOR }
+        Note {
+            journal,
+            roots,
+            batch,
+            text,
+            can_undo,
+            close_at: Instant::now() + SHOW_FOR,
+        }
     }
 }
 
@@ -65,10 +85,13 @@ impl eframe::App for Note {
             ui.add(egui::Label::new(&self.text).wrap());
             ui.add_space(4.0);
             if self.can_undo && ui.button("Undo").clicked() {
-                if let Some(j) = &self.journal {
-                    self.text = match j.undo(self.batch) {
+                if let (Some(j), Some(roots)) = (&self.journal, &self.roots) {
+                    self.text = match j.undo(self.batch, roots) {
                         Ok(r) if r.skipped.is_empty() && r.errors.is_empty() => {
-                            format!("Undone: {} back in Downloads.", crate::plural(r.moved.len(), "file"))
+                            format!(
+                                "Undone: {} back in Downloads.",
+                                crate::plural(r.moved.len(), "file")
+                            )
                         }
                         Ok(r) => format!("Undo: {}", r.summary()),
                         Err(e) => format!("Undo failed: {e}"),
@@ -88,16 +111,25 @@ fn corner_position() -> Option<egui::Pos2> {
         use windows_sys::Win32::Foundation::RECT;
         use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
         use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
-        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut r = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         // SAFETY: SPI_GETWORKAREA writes one RECT.
-        let ok = unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut r as *mut RECT as *mut _, 0) };
+        let ok =
+            unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut r as *mut RECT as *mut _, 0) };
         if ok == 0 {
             return None;
         }
         // SAFETY: no arguments.
         let scale = unsafe { GetDpiForSystem() } as f32 / 96.0;
         let scale = if scale > 0.0 { scale } else { 1.0 };
-        Some(egui::pos2(r.right as f32 / scale - SIZE[0] - 16.0, r.bottom as f32 / scale - SIZE[1] - 16.0))
+        Some(egui::pos2(
+            r.right as f32 / scale - SIZE[0] - 16.0,
+            r.bottom as f32 / scale - SIZE[1] - 16.0,
+        ))
     }
     #[cfg(not(windows))]
     {
@@ -118,7 +150,10 @@ pub fn run(batch: u64) -> eframe::Result {
     if let Some(p) = corner_position() {
         viewport = viewport.with_position(p);
     }
-    let options = eframe::NativeOptions { viewport, ..Default::default() };
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
     eframe::run_native(
         "File Organizer note",
         options,

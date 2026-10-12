@@ -9,8 +9,8 @@ use crate::config::Settings;
 use crate::fsops::path_key;
 use crate::journal::{BatchReport, Journal, TAG_AUTO};
 use crate::paths::{RootKind, Roots};
-use crate::plan::{execute_tagged, scan_root, Plan, PlannedMove, ScanOptions};
-use crate::safety::TEMP_EXTENSIONS;
+use crate::plan::{execute_tagged, scan_root_with, Plan, PlannedMove, ScanOptions};
+use crate::safety::{open_exclusive, TEMP_EXTENSIONS};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -19,6 +19,8 @@ use std::time::{Duration, SystemTime};
 pub const SETTLE_TIME: Duration = Duration::from_secs(60);
 /// How often the background sorter looks at Downloads.
 pub const CHECK_EVERY: Duration = Duration::from_secs(15);
+/// At most this many files are moved per check.
+pub const MAX_PER_TICK: usize = 200;
 /// Endings that always mean "still downloading" (checked on top of the
 /// stage 1 temp list).
 pub const DOWNLOADING_EXTENSIONS: &[&str] = &["crdownload", "part", "partial", "tmp", "download"];
@@ -30,12 +32,16 @@ pub struct AutoSorter {
 }
 
 fn is_downloading_name(p: &Path) -> bool {
-    let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let ext = p
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
     DOWNLOADING_EXTENSIONS.contains(&ext.as_str()) || TEMP_EXTENSIONS.contains(&ext.as_str())
 }
 
 fn settled(modified: SystemTime, now: SystemTime) -> bool {
-    now.duration_since(modified).is_ok_and(|age| age >= SETTLE_TIME)
+    now.duration_since(modified)
+        .is_ok_and(|age| age >= SETTLE_TIME)
 }
 
 impl AutoSorter {
@@ -43,13 +49,28 @@ impl AutoSorter {
         AutoSorter::default()
     }
 
-    /// One check: returns the Downloads files that may be moved now. Uses
-    /// the stage 1 scan (skip rules, lock check, two-minute rule) and adds
-    /// the background rules. Remembers sizes for the next check.
-    pub fn eligible(&mut self, roots: &Roots, settings: &Settings, now: SystemTime) -> Vec<PlannedMove> {
+    /// One check: returns the Downloads files that may be moved now (at
+    /// most [`MAX_PER_TICK`]). Uses the stage 1 scan (skip rules, two-minute
+    /// rule) with the cheap metadata check only, adds the background rules,
+    /// and only then opens the files that are stable and settled to make
+    /// sure no program has them open. Remembers sizes for the next check.
+    pub fn eligible(
+        &mut self,
+        roots: &Roots,
+        settings: &Settings,
+        now: SystemTime,
+    ) -> Vec<PlannedMove> {
         let opts = ScanOptions::new(settings, now);
         let mut plan = Plan::default();
-        scan_root(roots, settings, &opts, RootKind::Downloads, &mut HashSet::new(), &mut plan);
+        scan_root_with(
+            roots,
+            settings,
+            &opts,
+            RootKind::Downloads,
+            &mut HashSet::new(),
+            &mut plan,
+            false,
+        );
         let mut seen = HashMap::new();
         let mut out = Vec::new();
         for m in plan.moves {
@@ -57,7 +78,12 @@ impl AutoSorter {
             let now_state = (m.size, m.modified);
             let stable = self.seen.get(&key) == Some(&now_state);
             seen.insert(key, now_state);
-            if stable && settled(m.modified, now) && !is_downloading_name(&m.source) {
+            if out.len() < MAX_PER_TICK
+                && stable
+                && settled(m.modified, now)
+                && !is_downloading_name(&m.source)
+                && open_exclusive(&m.source).is_ok()
+            {
                 out.push(m);
             }
         }
@@ -84,7 +110,13 @@ impl AutoSorter {
         if moves.is_empty() {
             return None;
         }
-        let report = execute_tagged(roots, &moves, journal, &ScanOptions::new(settings, now), TAG_AUTO);
+        let report = execute_tagged(
+            roots,
+            &moves,
+            journal,
+            &ScanOptions::new(settings, now),
+            TAG_AUTO,
+        );
         (!report.moved.is_empty() || !report.errors.is_empty()).then_some(report)
     }
 }
@@ -103,10 +135,19 @@ pub fn note_text(roots: &Roots, moved: &[(std::path::PathBuf, std::path::PathBuf
             dirs.push(label);
         }
     }
-    let files = if moved.len() == 1 { "1 file".to_string() } else { format!("{} files", moved.len()) };
+    let files = if moved.len() == 1 {
+        "1 file".to_string()
+    } else {
+        format!("{} files", moved.len())
+    };
     match dirs.len() {
         0 => format!("Moved {files}"),
         1 => format!("Moved {files} to {}", dirs[0]),
-        n => format!("Moved {files} to {} and {} other folder{}", dirs[0], n - 1, if n == 2 { "" } else { "s" }),
+        n => format!(
+            "Moved {files} to {} and {} other folder{}",
+            dirs[0],
+            n - 1,
+            if n == 2 { "" } else { "s" }
+        ),
     }
 }

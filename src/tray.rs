@@ -11,18 +11,23 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::time::SystemTime;
 use windows_sys::core::PCWSTR;
-use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows_sys::Win32::Foundation::{
+    GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, WPARAM,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
-    GetCursorPos, GetMessageW, GetSystemMetrics, LoadIconW, LoadImageW, PostMessageW, PostQuitMessage, RegisterClassW,
-    RegisterWindowMessageW, SetForegroundWindow, SetTimer, TrackPopupMenu, TranslateMessage, HICON, IDI_APPLICATION,
-    IMAGE_ICON, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WM_APP, WM_CLOSE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
+    DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, LoadIconW, LoadImageW,
+    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
+    SetTimer, TrackPopupMenu, TranslateMessage, HICON, IDI_APPLICATION, IMAGE_ICON, MF_CHECKED,
+    MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP,
+    WM_CLOSE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    WS_OVERLAPPED,
 };
 
 const WM_TRAY: u32 = WM_APP + 1;
@@ -65,7 +70,10 @@ fn spawn_self(args: &[&str]) {
 
 impl Tray {
     fn settings(&self) -> Settings {
-        let text = self.settings_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+        let text = self
+            .settings_path
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok());
         text.map(|t| Settings::from_json(&t).0).unwrap_or_default()
     }
 
@@ -108,7 +116,10 @@ impl Tray {
         }
         let settings = self.settings();
         let paused = settings.background_paused;
-        if let Some(report) = self.sorter.tick(roots, &settings, journal, paused, SystemTime::now()) {
+        if let Some(report) = self
+            .sorter
+            .tick(roots, &settings, journal, paused, SystemTime::now())
+        {
             if !report.moved.is_empty() {
                 spawn_self(&["--note", &report.batch.to_string()]);
             }
@@ -123,8 +134,10 @@ impl Tray {
     }
 
     fn undo_last(&self) {
-        let Some(journal) = &self.journal else { return };
-        if let Ok(Some(report)) = journal.undo_last_tagged(TAG_AUTO) {
+        let (Some(journal), Some(roots)) = (&self.journal, &self.roots) else {
+            return;
+        };
+        if let Ok(Some(report)) = journal.undo_last_tagged(TAG_AUTO, roots) {
             spawn_self(&["--note", &report.batch.to_string()]);
         }
     }
@@ -137,7 +150,12 @@ fn menu(hwnd: HWND, paused: bool, autostart_on: bool) -> usize {
         let m = CreatePopupMenu();
         let item = |id: usize, text: &str, checked: bool| {
             let t = wide(text);
-            AppendMenuW(m, MF_STRING | if checked { MF_CHECKED } else { 0 }, id, t.as_ptr());
+            AppendMenuW(
+                m,
+                MF_STRING | if checked { MF_CHECKED } else { 0 },
+                id,
+                t.as_ptr(),
+            );
         };
         item(CMD_OPEN, "Open Organizer", false);
         item(CMD_PAUSE, "Pause", paused);
@@ -148,7 +166,15 @@ fn menu(hwnd: HWND, paused: bool, autostart_on: bool) -> usize {
         let mut pt = POINT { x: 0, y: 0 };
         GetCursorPos(&mut pt);
         SetForegroundWindow(hwnd); // so the menu closes when clicking elsewhere
-        let cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, std::ptr::null());
+        let cmd = TrackPopupMenu(
+            m,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            pt.x,
+            pt.y,
+            0,
+            hwnd,
+            std::ptr::null(),
+        );
         PostMessageW(hwnd, WM_NULL, 0, 0);
         DestroyMenu(m);
         cmd.max(0) as usize
@@ -223,7 +249,9 @@ pub fn run() {
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
         return; // single instance
     }
-    let roots = Roots::from_system().and_then(|r| r.validate().map(|_| r)).ok();
+    let roots = Roots::from_system()
+        .and_then(|r| r.validate().map(|_| r))
+        .ok();
     let dir = app_data_dir().ok();
     let journal = dir.as_ref().map(|d| Journal::new(d.join(JOURNAL_FILE)));
     let settings_path = dir.as_ref().map(|d| d.join("settings.json"));
@@ -263,7 +291,15 @@ pub fn run() {
             icon = LoadIconW(std::ptr::null_mut(), IDI_APPLICATION);
         }
         let taskbar_created = RegisterWindowMessageW(wide("TaskbarCreated").as_ptr());
-        let tray = Tray { hwnd, icon, roots, journal, settings_path, sorter: AutoSorter::new(), taskbar_created };
+        let tray = Tray {
+            hwnd,
+            icon,
+            roots,
+            journal,
+            settings_path,
+            sorter: AutoSorter::new(),
+            taskbar_created,
+        };
         tray.show_icon(true);
         TRAY.with(|t| *t.borrow_mut() = Some(tray));
         SetTimer(hwnd, TIMER_ID, CHECK_EVERY.as_millis() as u32, None);

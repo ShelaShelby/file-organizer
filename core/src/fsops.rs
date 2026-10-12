@@ -9,21 +9,34 @@ use std::path::{Path, PathBuf};
 #[cfg(windows)]
 pub fn move_no_replace(src: &Path, dst: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_COPY_ALLOWED, MOVEFILE_WRITE_THROUGH};
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_COPY_ALLOWED, MOVEFILE_WRITE_THROUGH,
+    };
     fn wide(p: &Path) -> Vec<u16> {
-        p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+        p.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
     let (s, d) = (wide(src), wide(dst));
     // No MOVEFILE_REPLACE_EXISTING: Windows refuses if the target exists.
     // SAFETY: both strings are NUL-terminated and live for the call.
-    let ok = unsafe { MoveFileExW(s.as_ptr(), d.as_ptr(), MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH) };
+    let ok = unsafe {
+        MoveFileExW(
+            s.as_ptr(),
+            d.as_ptr(),
+            MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH,
+        )
+    };
     if ok == 0 {
         return Err(io::Error::last_os_error());
     }
     // Across drives Windows copies then deletes; if the delete failed the
     // original is still there. Report it (nothing is lost).
     if src.symlink_metadata().is_ok() {
-        return Err(io::Error::other("copied, but the original could not be removed"));
+        return Err(io::Error::other(
+            "copied, but the original could not be removed",
+        ));
     }
     Ok(())
 }
@@ -43,10 +56,23 @@ pub fn numbered_name(file_name: &str, n: u32) -> String {
     let p = Path::new(file_name);
     match (p.file_stem(), p.extension()) {
         (Some(stem), Some(ext)) if !stem.is_empty() => {
-            format!("{} ({}).{}", stem.to_string_lossy(), n, ext.to_string_lossy())
+            format!(
+                "{} ({}).{}",
+                stem.to_string_lossy(),
+                n,
+                ext.to_string_lossy()
+            )
         }
         _ => format!("{file_name} ({n})"),
     }
+}
+
+/// True if any part of the path is `.` or `..`. Checked on the text, because
+/// `Path::components` silently drops `.` parts.
+pub fn has_dot_parts(p: &Path) -> bool {
+    p.to_string_lossy()
+        .split(['\\', '/'])
+        .any(|part| part == "." || part == "..")
 }
 
 /// Case-insensitive key for a path (Windows file names ignore case).

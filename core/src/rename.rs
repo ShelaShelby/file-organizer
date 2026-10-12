@@ -44,7 +44,8 @@ pub fn proposed_name(name: &str) -> Option<String> {
         Some(ext) => format!("{s}.{ext}"),
         None => s,
     };
-    (is_valid_windows_name(&new) && !new.eq_ignore_ascii_case(name) && split_ext(&new).1 == ext).then_some(new)
+    (is_valid_windows_name(&new) && !new.eq_ignore_ascii_case(name) && split_ext(&new).1 == ext)
+        .then_some(new)
 }
 
 /// ("name", Some("ext")) — the extension is what follows the LAST dot, and
@@ -58,12 +59,16 @@ fn split_ext(name: &str) -> (&str, Option<&str>) {
 
 /// Runs of spaces become one space; spaces at both ends are removed.
 fn squeeze_spaces(s: &str) -> String {
-    s.split(' ').filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
+    s.split(' ')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     let head = s.get(..prefix.len())?;
-    head.eq_ignore_ascii_case(prefix).then(|| &s[prefix.len()..])
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &s[prefix.len()..])
 }
 
 fn strip_suffix_ci<'a>(s: &'a str, suffix: &str) -> Option<&'a str> {
@@ -103,10 +108,17 @@ pub fn is_valid_windows_name(name: &str) -> bool {
     if name.is_empty() || name.len() > MAX_NAME_LEN || name.ends_with(' ') || name.ends_with('.') {
         return false;
     }
-    if name.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control()) {
+    if name.chars().any(|c| {
+        matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control()
+    }) {
         return false;
     }
-    let base = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let base = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_ascii_uppercase();
     let reserved = matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || ((base.starts_with("COM") || base.starts_with("LPT"))
             && base.len() == 4
@@ -141,7 +153,9 @@ pub struct RenameScan {
 }
 
 fn name_of(p: &Path) -> String {
-    p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+    p.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 /// Lower-cased names of everything in `dir` (files and folders).
@@ -185,7 +199,8 @@ pub fn find_renames(roots: &Roots, now: SystemTime, progress: &Progress) -> io::
         };
         let new_path = dir.join(&new);
         if targets.get(&path_key(&new_path)).copied().unwrap_or(0) > 1 {
-            scan.conflicts.push((f.path, format!("another file would also become \"{new}\"")));
+            scan.conflicts
+                .push((f.path, format!("another file would also become \"{new}\"")));
             continue;
         }
         let names = match dir_names.get(&dir) {
@@ -193,13 +208,15 @@ pub fn find_renames(roots: &Roots, now: SystemTime, progress: &Progress) -> io::
             None => match names_in(&dir) {
                 Ok(n) => dir_names.entry(dir.clone()).or_insert(n),
                 Err(e) => {
-                    scan.conflicts.push((f.path, format!("folder cannot be read: {e}")));
+                    scan.conflicts
+                        .push((f.path, format!("folder cannot be read: {e}")));
                     continue;
                 }
             },
         };
         if names.contains(&new.to_lowercase()) {
-            scan.conflicts.push((f.path, format!("\"{new}\" already exists")));
+            scan.conflicts
+                .push((f.path, format!("\"{new}\" already exists")));
             continue;
         }
         scan.items.push(ProposedRename { file: f, new_path });
@@ -210,16 +227,27 @@ pub fn find_renames(roots: &Roots, now: SystemTime, progress: &Progress) -> io::
 /// Renames the files the user ticked. Each one is checked again right
 /// before (still there, same size and last-changed time, not locked, new
 /// name still free and still exactly what the rules give). Never replaces.
-pub fn rename_files(roots: &Roots, items: &[ProposedRename], journal: &Journal, now: SystemTime) -> BatchReport {
+pub fn rename_files(
+    roots: &Roots,
+    items: &[ProposedRename],
+    journal: &Journal,
+    now: SystemTime,
+) -> BatchReport {
     let _lock = match journal.lock() {
         Ok(l) => l,
         Err(e) => {
             let mut report = BatchReport::default();
-            report.errors.push((journal.path().to_path_buf(), format!("journal is not available: {e}")));
+            report.errors.push((
+                journal.path().to_path_buf(),
+                format!("journal is not available: {e}"),
+            ));
             return report;
         }
     };
-    let mut report = BatchReport { batch: journal.next_batch_id(), ..Default::default() };
+    let mut report = BatchReport {
+        batch: journal.next_batch_id(),
+        ..Default::default()
+    };
     if let Err(e) = roots.validate() {
         report.errors.push((PathBuf::new(), e.to_string()));
         return report;
@@ -256,18 +284,30 @@ fn rename_one(
     match name_taken(dir, &new_name) {
         Ok(false) => {}
         Ok(true) => {
-            report.skipped.push((src.clone(), format!("\"{new_name}\" already exists")));
+            report
+                .skipped
+                .push((src.clone(), format!("\"{new_name}\" already exists")));
             return Ok(());
         }
         Err(e) => return Err(format!("folder cannot be read: {e}")),
     }
     move_no_replace(src, &item.new_path).map_err(|e| e.to_string())?;
-    let entry = Entry::new(report.batch, src, &item.new_path, item.file.size, item.file.modified).tagged(TAG_RENAME);
+    let entry = Entry::new(
+        report.batch,
+        src,
+        &item.new_path,
+        item.file.size,
+        item.file.modified,
+    )
+    .tagged(TAG_RENAME);
     if let Err(e) = journal.append(&Record::Move(entry)) {
         // Without a journal line the rename could not be undone: put it back.
         return Err(match move_no_replace(&item.new_path, src) {
             Ok(()) => format!("journal could not be written ({e}); name left as it was"),
-            Err(e2) => format!("journal could not be written ({e}); file is now {} ({e2})", item.new_path.display()),
+            Err(e2) => format!(
+                "journal could not be written ({e}); file is now {} ({e2})",
+                item.new_path.display()
+            ),
         });
     }
     report.moved.push((src.clone(), item.new_path.clone()));

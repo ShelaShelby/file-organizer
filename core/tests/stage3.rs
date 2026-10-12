@@ -3,7 +3,9 @@
 
 use organizer_core::autosort::{note_text, AutoSorter};
 use organizer_core::journal::{Record, TAG_AUTO, TAG_RENAME};
-use organizer_core::rename::{find_renames, is_valid_windows_name, proposed_name, rename_files, RenameScan};
+use organizer_core::rename::{
+    find_renames, is_valid_windows_name, proposed_name, rename_files, RenameScan,
+};
 use organizer_core::{execute, Journal, Progress, RootKind, Roots, ScanOptions, Settings};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,7 +24,10 @@ impl Env {
     fn new() -> Env {
         let parent = Path::new(env!("CARGO_TARGET_TMPDIR"));
         fs::create_dir_all(parent).unwrap();
-        let tmp = tempfile::Builder::new().prefix("fo-s3").tempdir_in(parent).unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("fo-s3")
+            .tempdir_in(parent)
+            .unwrap();
         let base = tmp.path().to_path_buf();
         let roots = Roots {
             downloads: base.join("Downloads"),
@@ -33,7 +38,12 @@ impl Env {
             fs::create_dir_all(roots.get(k)).unwrap();
         }
         let journal = Journal::new(base.join("appdata").join("journal.jsonl"));
-        Env { _tmp: tmp, roots, journal, settings: Settings::default() }
+        Env {
+            _tmp: tmp,
+            roots,
+            journal,
+            settings: Settings::default(),
+        }
     }
 
     fn renames(&self) -> RenameScan {
@@ -45,7 +55,13 @@ impl Env {
     }
 
     fn tick(&self, sorter: &mut AutoSorter, paused: bool) -> Option<organizer_core::BatchReport> {
-        sorter.tick(&self.roots, &self.settings, &self.journal, paused, SystemTime::now())
+        sorter.tick(
+            &self.roots,
+            &self.settings,
+            &self.journal,
+            paused,
+            SystemTime::now(),
+        )
     }
 }
 
@@ -71,14 +87,20 @@ fn secs(n: u64) -> Duration {
 }
 
 fn names_in(dir: &Path) -> Vec<String> {
-    let mut v: Vec<String> =
-        fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+    let mut v: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
     v.sort();
     v
 }
 
 fn proposals(scan: &RenameScan) -> Vec<(String, String)> {
-    let mut v: Vec<_> = scan.items.iter().map(|i| (i.old_name(), i.new_name())).collect();
+    let mut v: Vec<_> = scan
+        .items
+        .iter()
+        .map(|i| (i.old_name(), i.new_name()))
+        .collect();
     v.sort();
     v
 }
@@ -137,7 +159,11 @@ fn rename_keeps_extension_exactly() {
     assert_eq!(p("Copy of notes"), s("notes")); // no extension stays none
                                                 // Spaces in the extension are not touched (it never changes).
     assert_eq!(p("my  file.t x t"), s("my file.t x t"));
-    for (old, new) in [("Copy of a.pdf", "a.pdf"), ("b - Copy.mp3", "b.mp3"), ("c (1) (2).zip", "c.zip")] {
+    for (old, new) in [
+        ("Copy of a.pdf", "a.pdf"),
+        ("b - Copy.mp3", "b.mp3"),
+        ("c (1) (2).zip", "c.zip"),
+    ] {
         let got = p(old).unwrap();
         assert_eq!(got, new);
         assert_eq!(Path::new(&got).extension(), Path::new(old).extension());
@@ -146,10 +172,18 @@ fn rename_keeps_extension_exactly() {
 
 #[test]
 fn rename_never_invents_numbers_or_empty_names() {
-    for n in ["photo (1) (2).jpg", "Copy of report.docx", "a  b.txt", "x - Copy.txt"] {
+    for n in [
+        "photo (1) (2).jpg",
+        "Copy of report.docx",
+        "a  b.txt",
+        "x - Copy.txt",
+    ] {
         let new = p(n).unwrap();
         assert!(!new.contains('('), "{new}");
-        assert!(new.chars().filter(|c| c.is_ascii_digit()).count() <= n.chars().filter(|c| c.is_ascii_digit()).count());
+        assert!(
+            new.chars().filter(|c| c.is_ascii_digit()).count()
+                <= n.chars().filter(|c| c.is_ascii_digit()).count()
+        );
     }
     assert_eq!(p("   .txt"), None); // would leave no name
     assert_eq!(p("Copy of .txt"), s("Copy of.txt")); // only the space goes; never ".txt"
@@ -157,7 +191,9 @@ fn rename_never_invents_numbers_or_empty_names() {
 
 #[test]
 fn rename_refuses_invalid_windows_names() {
-    for bad in ["", "CON.txt", "con", "NUL.pdf", "COM1.doc", "lpt9", "a:b.txt", "a?.txt", "name.", "name "] {
+    for bad in [
+        "", "CON.txt", "con", "NUL.pdf", "COM1.doc", "lpt9", "a:b.txt", "a?.txt", "name.", "name ",
+    ] {
         assert!(!is_valid_windows_name(bad), "{bad:?} should be invalid");
     }
     let long = format!("{}.txt", "x".repeat(260));
@@ -178,7 +214,12 @@ fn rename_scan_finds_only_patterns_in_all_roots_and_subfolders() {
     file(&env.roots.downloads, "photo (1) (2).jpg", "a", days(3));
     file(&env.roots.downloads, "photo (1).jpg", "b", days(3));
     file(&env.roots.desktop, "Copy of report.docx", "c", days(3));
-    file(&env.roots.documents.join("Sub").join("Deeper"), "my  file .txt", "d", days(3));
+    file(
+        &env.roots.documents.join("Sub").join("Deeper"),
+        "my  file .txt",
+        "d",
+        days(3),
+    );
     file(&env.roots.documents, "fine.txt", "e", days(3));
     let scan = env.renames();
     assert_eq!(
@@ -190,7 +231,11 @@ fn rename_scan_finds_only_patterns_in_all_roots_and_subfolders() {
         ]
     );
     for i in &scan.items {
-        assert_eq!(i.new_path.parent(), i.file.path.parent(), "same folder only");
+        assert_eq!(
+            i.new_path.parent(),
+            i.file.path.parent(),
+            "same folder only"
+        );
     }
 }
 
@@ -206,8 +251,14 @@ fn rename_skips_when_target_exists_case_insensitive() {
     assert_eq!(scan.conflicts.len(), 2);
     let r = env.rename_all(&scan);
     assert!(r.moved.is_empty());
-    assert_eq!(fs::read_to_string(env.roots.downloads.join("REPORT.DOCX")).unwrap(), "original");
-    assert_eq!(fs::read_to_string(env.roots.downloads.join("x.txt")).unwrap(), "original");
+    assert_eq!(
+        fs::read_to_string(env.roots.downloads.join("REPORT.DOCX")).unwrap(),
+        "original"
+    );
+    assert_eq!(
+        fs::read_to_string(env.roots.downloads.join("x.txt")).unwrap(),
+        "original"
+    );
 }
 
 #[test]
@@ -237,7 +288,9 @@ fn rename_renames_in_place_keeps_content_and_journals() {
     let new = env.roots.downloads.join("photo.jpg");
     assert_eq!(fs::read_to_string(&new).unwrap(), "pixels");
     let recs = env.journal.records().unwrap();
-    assert!(matches!(&recs[0], Record::Move(e) if e.tag == TAG_RENAME && e.old == old && e.new == new));
+    assert!(
+        matches!(&recs[0], Record::Move(e) if e.tag == TAG_RENAME && e.old == old && e.new == new)
+    );
     let h = env.journal.history().unwrap();
     assert_eq!(h[0].tag, TAG_RENAME);
     assert_eq!(h[0].remaining.len(), 1);
@@ -254,7 +307,10 @@ fn rename_never_overwrites_file_created_after_scan() {
     assert!(r.moved.is_empty());
     assert_eq!(r.skipped.len() + r.errors.len(), 1);
     assert_eq!(fs::read_to_string(&old).unwrap(), "copy");
-    assert_eq!(fs::read_to_string(env.roots.downloads.join("Report.docx")).unwrap(), "made later");
+    assert_eq!(
+        fs::read_to_string(env.roots.downloads.join("Report.docx")).unwrap(),
+        "made later"
+    );
     assert!(env.journal.records().unwrap().is_empty());
 }
 
@@ -299,11 +355,20 @@ fn rename_skips_hidden_temp_shortcut_and_recent() {
     #[cfg(windows)]
     {
         let h = file(&env.roots.downloads, "Copy of hidden.txt", "h", days(3));
-        assert!(std::process::Command::new("attrib").arg("+h").arg(&h).status().unwrap().success());
+        assert!(std::process::Command::new("attrib")
+            .arg("+h")
+            .arg(&h)
+            .status()
+            .unwrap()
+            .success());
     }
     #[cfg(not(windows))]
     file(&env.roots.downloads, ".Copy of  hidden.txt", "h", days(3));
-    assert!(env.renames().items.is_empty(), "{:?}", proposals(&env.renames()));
+    assert!(
+        env.renames().items.is_empty(),
+        "{:?}",
+        proposals(&env.renames())
+    );
 }
 
 #[cfg(windows)]
@@ -326,7 +391,7 @@ fn rename_undo_restores_old_name() {
     let old = file(&env.roots.documents.join("Sub"), "a  b.txt", "x", days(3));
     let r = env.rename_all(&env.renames());
     assert_eq!(r.moved.len(), 1);
-    let u = env.journal.undo_last().unwrap().unwrap();
+    let u = env.journal.undo_last(&env.roots).unwrap().unwrap();
     assert_eq!(u.moved.len(), 1, "{u:?}");
     assert_eq!(fs::read_to_string(&old).unwrap(), "x");
     assert_eq!(names_in(&env.roots.documents.join("Sub")), vec!["a  b.txt"]);
@@ -341,15 +406,25 @@ fn rename_undo_only_if_still_new_name_and_old_name_free() {
     let r = env.rename_all(&env.renames());
     assert_eq!(r.moved.len(), 2);
     // a: user renamed it again; b: something new took the old name.
-    fs::rename(env.roots.downloads.join("a.txt"), env.roots.downloads.join("mine.txt")).unwrap();
+    fs::rename(
+        env.roots.downloads.join("a.txt"),
+        env.roots.downloads.join("mine.txt"),
+    )
+    .unwrap();
     file(&env.roots.downloads, "Copy of b.txt", "new file", days(3));
-    let u = env.journal.undo(r.batch).unwrap();
+    let u = env.journal.undo(r.batch, &env.roots).unwrap();
     assert!(u.moved.is_empty(), "{u:?}");
     assert_eq!(u.skipped.len(), 2);
     assert!(!old_a.exists());
-    assert_eq!(fs::read_to_string(env.roots.downloads.join("mine.txt")).unwrap(), "a");
+    assert_eq!(
+        fs::read_to_string(env.roots.downloads.join("mine.txt")).unwrap(),
+        "a"
+    );
     assert_eq!(fs::read_to_string(&old_b).unwrap(), "new file");
-    assert_eq!(fs::read_to_string(env.roots.downloads.join("b.txt")).unwrap(), "b");
+    assert_eq!(
+        fs::read_to_string(env.roots.downloads.join("b.txt")).unwrap(),
+        "b"
+    );
 }
 
 // ================================================================ background sorting
@@ -359,18 +434,33 @@ fn auto_moves_finished_download_after_two_checks() {
     let env = Env::new();
     let f = file(&env.roots.downloads, "photo.jpg", "img", days(2));
     let mut sorter = AutoSorter::new();
-    assert!(env.tick(&mut sorter, false).is_none(), "first sight: not yet");
+    assert!(
+        env.tick(&mut sorter, false).is_none(),
+        "first sight: not yet"
+    );
     assert!(f.exists());
     let r = env.tick(&mut sorter, false).expect("second check moves it");
     assert_eq!(r.moved.len(), 1);
-    let month = organizer_core::plan::month_folder(fs::metadata(&r.moved[0].1).unwrap().modified().unwrap());
-    assert_eq!(r.moved[0].1, env.roots.downloads.join("Images").join(&month).join("photo.jpg"));
+    let month = organizer_core::plan::month_folder(
+        fs::metadata(&r.moved[0].1).unwrap().modified().unwrap(),
+    );
+    assert_eq!(
+        r.moved[0].1,
+        env.roots
+            .downloads
+            .join("Images")
+            .join(&month)
+            .join("photo.jpg")
+    );
     let recs = env.journal.records().unwrap();
     assert!(matches!(&recs[0], Record::Move(e) if e.tag == TAG_AUTO));
     assert_eq!(env.journal.history().unwrap()[0].tag, TAG_AUTO);
     assert_eq!(
         note_text(&env.roots, &r.moved),
-        format!("Moved 1 file to {}", Path::new("Downloads").join("Images").join(&month).display())
+        format!(
+            "Moved 1 file to {}",
+            Path::new("Downloads").join("Images").join(&month).display()
+        )
     );
 }
 
@@ -404,8 +494,20 @@ fn auto_waits_while_size_is_still_changing() {
 fn auto_never_moves_temp_or_downloading_files() {
     let env = Env::new();
     let mut files = Vec::new();
-    for ext in ["crdownload", "part", "partial", "tmp", "download", "CRDOWNLOAD"] {
-        files.push(file(&env.roots.downloads, &format!("movie.{ext}"), "x", days(1)));
+    for ext in [
+        "crdownload",
+        "part",
+        "partial",
+        "tmp",
+        "download",
+        "CRDOWNLOAD",
+    ] {
+        files.push(file(
+            &env.roots.downloads,
+            &format!("movie.{ext}"),
+            "x",
+            days(1),
+        ));
     }
     let mut sorter = AutoSorter::new();
     for _ in 0..3 {
@@ -435,11 +537,17 @@ fn auto_pause_is_saved_in_settings() {
     let env = Env::new();
     let path = env.journal.path().with_file_name("settings.json");
     Settings::load_or_create(&path);
-    assert!(!Settings::load_or_create(&path).0.background_paused, "default is running");
+    assert!(
+        !Settings::load_or_create(&path).0.background_paused,
+        "default is running"
+    );
     Settings::update(&path, |s| s.background_paused = true).unwrap();
     assert!(Settings::load_or_create(&path).0.background_paused);
     // The window saving its own settings keeps the tray's switch.
-    let other = Settings { big_file_mb: 42, ..Settings::default() };
+    let other = Settings {
+        big_file_mb: 42,
+        ..Settings::default()
+    };
     Settings::update(&path, |s| {
         let paused = s.background_paused;
         *s = other.clone();
@@ -454,7 +562,12 @@ fn auto_pause_is_saved_in_settings() {
 #[test]
 fn auto_only_top_level_of_downloads() {
     let env = Env::new();
-    let sub = file(&env.roots.downloads.join("Folder"), "inner.jpg", "x", days(1));
+    let sub = file(
+        &env.roots.downloads.join("Folder"),
+        "inner.jpg",
+        "x",
+        days(1),
+    );
     let desk = file(&env.roots.desktop, "desk.jpg", "x", days(30));
     let mut sorter = AutoSorter::new();
     for _ in 0..3 {
@@ -490,11 +603,19 @@ fn auto_undo_last_auto_sort_only() {
     // A later manual rename must not be what "Undo last auto-sort" undoes.
     let g = file(&env.roots.documents, "Copy of z.txt", "z", days(3));
     assert_eq!(env.rename_all(&env.renames()).moved.len(), 1);
-    let u = env.journal.undo_last_tagged(TAG_AUTO).unwrap().unwrap();
+    let u = env
+        .journal
+        .undo_last_tagged(TAG_AUTO, &env.roots)
+        .unwrap()
+        .unwrap();
     assert_eq!(u.moved.len(), 1);
     assert!(f.exists(), "auto move undone");
     assert!(!g.exists(), "rename left as it is");
-    assert!(env.journal.undo_last_tagged(TAG_AUTO).unwrap().is_none());
+    assert!(env
+        .journal
+        .undo_last_tagged(TAG_AUTO, &env.roots)
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -502,9 +623,18 @@ fn note_text_for_several_folders() {
     let env = Env::new();
     let d = &env.roots.downloads;
     let moved = vec![
-        (d.join("a.jpg"), d.join("Images").join("2026-10").join("a.jpg")),
-        (d.join("b.jpg"), d.join("Images").join("2026-10").join("b.jpg")),
-        (d.join("c.pdf"), d.join("Documents").join("2026-09").join("c.pdf")),
+        (
+            d.join("a.jpg"),
+            d.join("Images").join("2026-10").join("a.jpg"),
+        ),
+        (
+            d.join("b.jpg"),
+            d.join("Images").join("2026-10").join("b.jpg"),
+        ),
+        (
+            d.join("c.pdf"),
+            d.join("Documents").join("2026-09").join("c.pdf"),
+        ),
     ];
     let t = note_text(&env.roots, &moved);
     assert!(t.starts_with("Moved 3 files to "), "{t}");
@@ -517,7 +647,10 @@ fn note_text_for_several_folders() {
 fn journal_lock_is_exclusive() {
     let env = Env::new();
     let held = env.journal.lock().unwrap();
-    assert!(env.journal.try_lock().unwrap().is_none(), "second holder must wait");
+    assert!(
+        env.journal.try_lock().unwrap().is_none(),
+        "second holder must wait"
+    );
     drop(held);
     assert!(env.journal.try_lock().unwrap().is_some());
 }
@@ -533,7 +666,16 @@ fn same_file_is_never_moved_twice_by_parallel_batches() {
     assert_eq!(plan.moves.len(), 20);
     let reports: Vec<_> = std::thread::scope(|s| {
         let h: Vec<_> = (0..2)
-            .map(|_| s.spawn(|| execute(&env.roots, &plan.moves, &Journal::new(env.journal.path()), &opts)))
+            .map(|_| {
+                s.spawn(|| {
+                    execute(
+                        &env.roots,
+                        &plan.moves,
+                        &Journal::new(env.journal.path()),
+                        &opts,
+                    )
+                })
+            })
             .collect();
         h.into_iter().map(|h| h.join().unwrap()).collect()
     });
@@ -544,7 +686,10 @@ fn same_file_is_never_moved_twice_by_parallel_batches() {
     assert_eq!(recs.len(), 20, "one readable journal line per move");
     let month = names_in(&env.roots.downloads.join("Documents"));
     assert_eq!(month.len(), 1);
-    assert_eq!(names_in(&env.roots.downloads.join("Documents").join(&month[0])).len(), 20);
+    assert_eq!(
+        names_in(&env.roots.downloads.join("Documents").join(&month[0])).len(),
+        20
+    );
 }
 
 // ================================================================ Start with Windows
@@ -552,7 +697,10 @@ fn same_file_is_never_moved_twice_by_parallel_batches() {
 #[test]
 fn autostart_command_line() {
     let exe = Path::new(r"C:\Apps\file-organizer.exe");
-    assert_eq!(organizer_core::autostart::command_for(exe), "\"C:\\Apps\\file-organizer.exe\" --tray");
+    assert_eq!(
+        organizer_core::autostart::command_for(exe),
+        "\"C:\\Apps\\file-organizer.exe\" --tray"
+    );
 }
 
 #[cfg(windows)]

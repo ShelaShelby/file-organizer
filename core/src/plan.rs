@@ -1,10 +1,10 @@
 //! Scan the roots, build the preview list, and carry out confirmed moves.
 
-use crate::config::Settings;
-use crate::fsops::{free_target, move_into, path_key};
+use crate::config::{safe_folder_name, Settings};
+use crate::fsops::{free_target, has_dot_parts, move_into, path_key};
 use crate::journal::{BatchReport, Entry, Journal, Record};
 use crate::paths::{RootKind, Roots};
-use crate::safety::{check_entry, Check, SkipReason};
+use crate::safety::{check_entry, check_entry_unlocked, Check, SkipReason};
 use chrono::{DateTime, Local};
 use std::collections::HashSet;
 use std::fs;
@@ -25,13 +25,19 @@ pub struct ScanOptions {
 
 impl ScanOptions {
     pub fn new(settings: &Settings, now: SystemTime) -> Self {
-        ScanOptions { now, recent_days: settings.recent_days, downloads_grace: DOWNLOADS_GRACE }
+        ScanOptions {
+            now,
+            recent_days: settings.recent_days,
+            downloads_grace: DOWNLOADS_GRACE,
+        }
     }
 
     pub fn min_age(&self, kind: RootKind) -> Duration {
         match kind {
             RootKind::Downloads => self.downloads_grace,
-            RootKind::Desktop | RootKind::Documents => Duration::from_secs(u64::from(self.recent_days) * 86_400),
+            RootKind::Desktop | RootKind::Documents => {
+                Duration::from_secs(u64::from(self.recent_days) * 86_400)
+            }
         }
     }
 }
@@ -76,8 +82,7 @@ pub fn scan(roots: &Roots, settings: &Settings, opts: &ScanOptions) -> io::Resul
     Ok(plan)
 }
 
-/// Plans the loose files at the top level of one root (also used by
-/// background sorting for Downloads).
+/// Plans the loose files at the top level of one root.
 pub fn scan_root(
     roots: &Roots,
     settings: &Settings,
@@ -85,6 +90,21 @@ pub fn scan_root(
     kind: RootKind,
     taken: &mut HashSet<String>,
     plan: &mut Plan,
+) {
+    scan_root_with(roots, settings, opts, kind, taken, plan, true)
+}
+
+/// [`scan_root`]; with `open_check` false files are NOT opened (only their
+/// metadata is read; background sorting opens just the few files it is
+/// about to move, and every move re-checks anyway).
+pub fn scan_root_with(
+    roots: &Roots,
+    settings: &Settings,
+    opts: &ScanOptions,
+    kind: RootKind,
+    taken: &mut HashSet<String>,
+    plan: &mut Plan,
+    open_check: bool,
 ) {
     let root = roots.get(kind);
     let entries = match fs::read_dir(root) {
@@ -103,7 +123,12 @@ pub fn scan_root(
     }
     paths.sort_by_key(|p| path_key(p));
     for path in paths {
-        match check_entry(&path, opts.min_age(kind), opts.now) {
+        let check = if open_check {
+            check_entry(&path, opts.min_age(kind), opts.now)
+        } else {
+            check_entry_unlocked(&path, opts.min_age(kind), opts.now)
+        };
+        match check {
             Check::Folder => {}
             Check::Skip(r) => plan.skipped.push((path, r)),
             Check::Ok { size, modified } => {
@@ -112,23 +137,61 @@ pub fn scan_root(
                 let dir = target_dir(roots, kind, &category, modified);
                 let target = free_target(&dir, &name, taken);
                 taken.insert(path_key(&target));
-                plan.moves.push(PlannedMove { root: kind, source: path, target, category, size, modified });
+                plan.moves.push(PlannedMove {
+                    root: kind,
+                    source: path,
+                    target,
+                    category,
+                    size,
+                    modified,
+                });
             }
         }
     }
 }
 
 fn target_dir(roots: &Roots, kind: RootKind, category: &str, modified: SystemTime) -> PathBuf {
-    roots.target_base(kind).join(category).join(month_folder(modified))
+    roots
+        .target_base(kind)
+        .join(category)
+        .join(month_folder(modified))
 }
 
 fn file_name(p: &Path) -> String {
-    p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+    p.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// The folder a planned move may go to. Nothing in `m` is trusted: the
+/// source must be a loose file directly inside its root, the folder is
+/// recomputed from root + type folder + month, and the planned target must
+/// lie in exactly that folder (compared ignoring case, no `..` or `.`).
+fn checked_target_dir(roots: &Roots, m: &PlannedMove) -> Result<PathBuf, &'static str> {
+    if has_dot_parts(&m.source) || has_dot_parts(&m.target) {
+        return Err("path contains '..' or '.'");
+    }
+    if m.source.parent().map(path_key) != Some(path_key(roots.get(m.root))) {
+        return Err("not a loose file in a chosen folder");
+    }
+    if safe_folder_name(&m.category) != m.category {
+        return Err("unexpected type folder");
+    }
+    let dir = target_dir(roots, m.root, &m.category, m.modified);
+    if m.target.parent().map(path_key) != Some(path_key(&dir)) {
+        return Err("unexpected target folder");
+    }
+    Ok(dir)
 }
 
 /// Carry out the moves the user confirmed. Each file is checked again just
 /// before it is moved; a problem with one file never stops the batch.
-pub fn execute(roots: &Roots, moves: &[PlannedMove], journal: &Journal, opts: &ScanOptions) -> BatchReport {
+pub fn execute(
+    roots: &Roots,
+    moves: &[PlannedMove],
+    journal: &Journal,
+    opts: &ScanOptions,
+) -> BatchReport {
     execute_tagged(roots, moves, journal, opts, "")
 }
 
@@ -145,37 +208,41 @@ pub fn execute_tagged(
         Ok(l) => l,
         Err(e) => {
             let mut report = BatchReport::default();
-            report.errors.push((journal.path().to_path_buf(), format!("journal is not available: {e}")));
+            report.errors.push((
+                journal.path().to_path_buf(),
+                format!("journal is not available: {e}"),
+            ));
             return report;
         }
     };
-    let mut report = BatchReport { batch: journal.next_batch_id(), ..Default::default() };
+    let mut report = BatchReport {
+        batch: journal.next_batch_id(),
+        ..Default::default()
+    };
     if let Err(e) = roots.validate() {
         report.errors.push((PathBuf::new(), e.to_string()));
         return report;
     }
     for m in moves {
-        let root = roots.get(m.root);
-        // Only loose files directly inside the root, nothing else.
-        if m.source.parent().map(path_key) != Some(path_key(root)) {
-            report.errors.push((m.source.clone(), "not a loose file in a chosen folder".into()));
-            continue;
-        }
-        let dir = match m.target.parent() {
-            Some(d) if d.starts_with(roots.target_base(m.root)) => d.to_path_buf(),
-            _ => {
-                report.errors.push((m.source.clone(), "unexpected target folder".into()));
+        let dir = match checked_target_dir(roots, m) {
+            Ok(d) => d,
+            Err(e) => {
+                report.errors.push((m.source.clone(), e.into()));
                 continue;
             }
         };
         match check_entry(&m.source, opts.min_age(m.root), opts.now) {
             Check::Ok { size, modified } if size == m.size && modified == m.modified => {}
             Check::Ok { .. } => {
-                report.skipped.push((m.source.clone(), SkipReason::Changed.to_string()));
+                report
+                    .skipped
+                    .push((m.source.clone(), SkipReason::Changed.to_string()));
                 continue;
             }
             Check::Folder => {
-                report.skipped.push((m.source.clone(), SkipReason::NotAFile.to_string()));
+                report
+                    .skipped
+                    .push((m.source.clone(), SkipReason::NotAFile.to_string()));
                 continue;
             }
             Check::Skip(r) => {
@@ -183,7 +250,7 @@ pub fn execute_tagged(
                 continue;
             }
         }
-        let name = m.target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| file_name(&m.source));
+        let name = file_name(&m.source);
         let new = match move_into(&m.source, &dir, &name) {
             Ok(p) => p,
             Err(e) => {
@@ -196,7 +263,10 @@ pub fn execute_tagged(
             // Without a journal line the move could not be undone: put it back.
             let msg = match crate::fsops::move_no_replace(&new, &m.source) {
                 Ok(()) => format!("journal could not be written ({e}); file left in place"),
-                Err(e2) => format!("journal could not be written ({e}); file is now at {} ({e2})", new.display()),
+                Err(e2) => format!(
+                    "journal could not be written ({e}); file is now at {} ({e2})",
+                    new.display()
+                ),
             };
             report.errors.push((m.source.clone(), msg));
             continue;

@@ -6,21 +6,25 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  windows:
+  build:
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Build (release)
         run: cargo build --release --locked
@@ -31,34 +35,86 @@ jobs:
       - name: Real Recycle Bin test (shows its output)
         run: cargo test -p organizer-core --locked --test stage2 real_windows_recycle_bin -- --nocapture
 
+      - name: Manifest is embedded
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("target/release/file-organizer.exe")
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($w in @('level="asInvoker"', 'PerMonitorV2', '8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a')) {
+            if (-not $text.Contains($w)) { throw "manifest entry missing: $w" }
+          }
+          "manifest ok"
+
+      - name: Exe starts (loader check, --tray for 3 s)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "target/release/file-organizer.exe" -ArgumentList "--tray" -PassThru
+          Start-Sleep -Seconds 3
+          if ($p.HasExited) { throw "file-organizer.exe --tray exited early (code $($p.ExitCode))" }
+          Stop-Process -Id $p.Id -Force
+          "file-organizer.exe --tray was still running after 3 s"
+
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/file-organizer.exe dist/
           Copy-Item README.txt dist/
+          Copy-Item SECURITY.md dist/
           Compress-Archive -Path dist/* -DestinationPath file-organizer.zip -Force
+          $hash = (Get-FileHash file-organizer.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  file-organizer.zip" | Out-File -Encoding ascii -NoNewline file-organizer.zip.sha256
           "exe size: {0:N0} bytes" -f (Get-Item dist/file-organizer.exe).Length
+          "sha256: $hash"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: file-organizer
-          path: file-organizer.zip
+          path: |
+            file-organizer.zip
+            file-organizer.zip.sha256
+
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: cargo audit (does not block the build)
+        continue-on-error: true
+        run: |
+          cargo install --locked cargo-audit
+          cargo audit
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: file-organizer
 
       - name: Publish "latest" release (main only)
-        if: github.ref == 'refs/heads/main'
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
-          head=$(git ls-remote origin refs/heads/main | cut -f1)
+          head=$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)
           if [ "$head" != "$GITHUB_SHA" ]; then
             echo "main moved on ($head); the newer run will publish."
             exit 0
           fi
-          gh release delete latest --cleanup-tag --yes || true
-          git push origin :refs/tags/latest || true
-          gh release create latest file-organizer.zip \
+          hash=$(cut -d' ' -f1 file-organizer.zip.sha256)
+          gh release delete latest --repo "$REPO" --cleanup-tag --yes || true
+          gh api -X DELETE "repos/$REPO/git/refs/tags/latest" || true
+          gh release create latest file-organizer.zip file-organizer.zip.sha256 \
+            --repo "$REPO" \
             --target "$GITHUB_SHA" \
             --title "File Organizer (latest)" \
-            --notes "Built from commit $GITHUB_SHA. Download file-organizer.zip, unzip, run file-organizer.exe."
+            --notes "Built from commit $GITHUB_SHA. Download file-organizer.zip, unzip, run file-organizer.exe.
+
+          SHA-256 of file-organizer.zip: \`$hash\`"

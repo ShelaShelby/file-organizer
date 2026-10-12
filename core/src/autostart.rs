@@ -3,7 +3,7 @@
 //! no admin rights). Off unless the user turns it on.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 /// Name of the value the app uses.
@@ -28,14 +28,63 @@ pub fn is_enabled() -> bool {
     get_run_value(VALUE_NAME).ok().flatten().is_some()
 }
 
+/// The exe path inside a Run value such as `"C:\x\file-organizer.exe" --tray`.
+pub fn exe_in_command(command: &str) -> Option<PathBuf> {
+    let c = command.trim();
+    let path = match c.strip_prefix('"') {
+        Some(rest) => &rest[..rest.find('"')?],
+        None => c.split(" --").next().unwrap_or(c).trim(),
+    };
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// What "Start with Windows" currently does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    Off,
+    /// Starts this copy of the app.
+    ThisCopy(PathBuf),
+    /// Starts another copy (or a file that is gone): offer "Use this copy".
+    OtherCopy(PathBuf),
+}
+
+/// Compares the Run value with the running exe (final paths, ignoring case).
+/// A missing file counts as another copy.
+pub fn status_for(command: Option<&str>, current_exe: &Path) -> Status {
+    let Some(cmd) = command else {
+        return Status::Off;
+    };
+    let Some(target) = exe_in_command(cmd) else {
+        return Status::OtherCopy(PathBuf::from(cmd));
+    };
+    let key = |p: &Path| {
+        crate::paths::final_path(p)
+            .ok()
+            .map(|f| crate::fsops::path_key(&f))
+    };
+    match (key(&target), key(current_exe)) {
+        (Some(a), Some(b)) if a == b => Status::ThisCopy(target),
+        _ => Status::OtherCopy(target),
+    }
+}
+
+/// [`status_for`] with the real Run value and the running exe.
+pub fn status() -> Status {
+    let value = get_run_value(VALUE_NAME).ok().flatten();
+    match std::env::current_exe() {
+        Ok(exe) => status_for(value.as_deref(), &exe),
+        Err(_) => status_for(value.as_deref(), Path::new("")),
+    }
+}
+
 #[cfg(windows)]
 mod sys {
     use super::RUN_KEY;
     use std::io;
     use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegGetValueW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
-        KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
+        RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegGetValueW, RegSetValueExW, HKEY,
+        HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
     };
 
     fn wide(s: &str) -> Vec<u16> {
@@ -119,7 +168,10 @@ mod sys {
 mod sys {
     use std::io;
     fn no() -> io::Error {
-        io::Error::new(io::ErrorKind::Unsupported, "Start with Windows only works on Windows")
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Start with Windows only works on Windows",
+        )
     }
     pub fn set(_name: &str, _data: &str) -> io::Result<()> {
         Err(no())

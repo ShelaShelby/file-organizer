@@ -1,21 +1,21 @@
 //! Sending chosen files to the Recycle Bin, with every file checked again
 //! right before it goes, and a journal line for each one.
 
-use crate::fsops::path_key;
+use crate::fsops::{has_dot_parts, path_key};
 use crate::journal::{BatchReport, Entry, Journal, Record};
 use crate::paths::{RootKind, Roots};
 use crate::recycle::Recycler;
-use crate::safety::{check_entry, folder_skip_reason, Check, SkipReason};
+use crate::safety::{check_entry, folder_skip_reason, program_folder_on_disk, Check, SkipReason};
 use crate::tree::{ScannedFile, GRACE};
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// The root `path` lies in, if every folder between that root and the file
-/// is a normal folder (no link, junction, hidden/system or protected
-/// folder). Anything else is refused.
+/// is a normal folder (no link, junction, hidden/system, protected, program
+/// or project folder). Anything else is refused.
 pub fn root_of(roots: &Roots, path: &Path) -> Result<RootKind, String> {
-    if path.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir)) {
+    if has_dot_parts(path) {
         return Err("path contains '..' or '.'".into());
     }
     for kind in RootKind::ALL {
@@ -30,7 +30,9 @@ pub fn root_of(roots: &Roots, path: &Path) -> Result<RootKind, String> {
         }
         for c in &parts[..parts.len() - 1] {
             dir.push(c);
-            let ok = fs::symlink_metadata(&dir).ok().filter(|m| folder_skip_reason(&dir, m).is_none());
+            let ok = fs::symlink_metadata(&dir).ok().filter(|m| {
+                folder_skip_reason(&dir, m).is_none() && program_folder_on_disk(&dir).is_none()
+            });
             if ok.is_none() {
                 return Err(format!("folder is not safe to touch: {}", dir.display()));
             }
@@ -38,6 +40,46 @@ pub fn root_of(roots: &Roots, path: &Path) -> Result<RootKind, String> {
         return Ok(kind);
     }
     Err("not inside Downloads, Desktop or Documents".into())
+}
+
+/// Checks a path read from the journal before Undo uses it. Without any
+/// disk access: no `..` or `.` parts, absolute, not protected, not in the
+/// app-data folder (`app_dir`), and inside one of the current roots (not a
+/// root itself).
+pub fn journal_path_ok(
+    roots: &Roots,
+    path: &Path,
+    app_dir: Option<&Path>,
+) -> Result<RootKind, String> {
+    if has_dot_parts(path) {
+        return Err("path contains '..' or '.'".into());
+    }
+    if !path.is_absolute() {
+        return Err("path is not absolute".into());
+    }
+    if crate::paths::is_protected(path) {
+        return Err(format!("protected place: {}", path.display()));
+    }
+    let p = crate::paths::norm(path);
+    let app_dirs = app_dir
+        .map(Path::to_path_buf)
+        .into_iter()
+        .chain(crate::paths::app_data_dir().ok());
+    for d in app_dirs {
+        let d = crate::paths::norm(&d);
+        if !d.is_empty() && crate::paths::is_within(&p, &d) {
+            return Err(format!("app-data folder: {}", path.display()));
+        }
+    }
+    for kind in RootKind::ALL {
+        if let Ok(rest) = strip_prefix_ci(path, roots.get(kind)) {
+            if rest.as_os_str().is_empty() {
+                return Err("is a chosen folder itself".into());
+            }
+            return Ok(kind);
+        }
+    }
+    Err(format!("not inside a chosen folder: {}", path.display()))
 }
 
 fn strip_prefix_ci<'a>(path: &'a Path, base: &Path) -> Result<&'a Path, ()> {
@@ -70,7 +112,13 @@ pub fn recycle_checked(
     }
     match recycler.recycle(&f.path) {
         Ok(place) => {
-            let entry = Entry::new(report.batch, &f.path, &place.unwrap_or_default(), f.size, f.modified);
+            let entry = Entry::new(
+                report.batch,
+                &f.path,
+                &place.unwrap_or_default(),
+                f.size,
+                f.modified,
+            );
             if let Err(e) = journal.append(&Record::Recycle(entry)) {
                 report.errors.push((
                     f.path.clone(),
@@ -82,9 +130,15 @@ pub fn recycle_checked(
         }
         Err(e) => {
             if f.path.symlink_metadata().is_ok() {
-                report.errors.push((f.path.clone(), format!("not sent to the Recycle Bin, file left in place: {e}")));
+                report.errors.push((
+                    f.path.clone(),
+                    format!("not sent to the Recycle Bin, file left in place: {e}"),
+                ));
             } else {
-                report.errors.push((f.path.clone(), format!("Recycle Bin reported an error: {e}")));
+                report.errors.push((
+                    f.path.clone(),
+                    format!("Recycle Bin reported an error: {e}"),
+                ));
             }
             false
         }
@@ -97,11 +151,15 @@ pub fn still_same(f: &ScannedFile, now: SystemTime, report: &mut BatchReport) ->
     match check_entry(&f.path, GRACE, now) {
         Check::Ok { size, modified } if size == f.size && modified == f.modified => true,
         Check::Ok { .. } => {
-            report.skipped.push((f.path.clone(), SkipReason::Changed.to_string()));
+            report
+                .skipped
+                .push((f.path.clone(), SkipReason::Changed.to_string()));
             false
         }
         Check::Folder => {
-            report.skipped.push((f.path.clone(), SkipReason::NotAFile.to_string()));
+            report
+                .skipped
+                .push((f.path.clone(), SkipReason::NotAFile.to_string()));
             false
         }
         Check::Skip(r) => {
@@ -124,11 +182,17 @@ pub fn recycle_files(
         Ok(l) => l,
         Err(e) => {
             let mut report = BatchReport::default();
-            report.errors.push((journal.path().to_path_buf(), format!("journal is not available: {e}")));
+            report.errors.push((
+                journal.path().to_path_buf(),
+                format!("journal is not available: {e}"),
+            ));
             return report;
         }
     };
-    let mut report = BatchReport { batch: journal.next_batch_id(), ..Default::default() };
+    let mut report = BatchReport {
+        batch: journal.next_batch_id(),
+        ..Default::default()
+    };
     if let Err(e) = roots.validate() {
         report.errors.push((PathBuf::new(), e.to_string()));
         return report;

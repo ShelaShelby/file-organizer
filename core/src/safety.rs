@@ -6,7 +6,14 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 /// Endings of files that are still downloading or are temporary.
-pub const TEMP_EXTENSIONS: &[&str] = &["crdownload", "part", "partial", "tmp", "download", "opdownload"];
+pub const TEMP_EXTENSIONS: &[&str] = &[
+    "crdownload",
+    "part",
+    "partial",
+    "tmp",
+    "download",
+    "opdownload",
+];
 /// Name prefixes of Office / LibreOffice lock and temp files.
 pub const TEMP_PREFIXES: &[&str] = &["~$", ".~lock."];
 /// Shortcuts are never moved.
@@ -25,6 +32,10 @@ pub enum SkipReason {
     NotAFile,
     InUse(String),
     Changed,
+    /// The running File Organizer program.
+    SelfApp,
+    /// A program or project folder (see [`program_folder_reason`]).
+    ProgramFolder,
 }
 
 impl fmt::Display for SkipReason {
@@ -41,6 +52,8 @@ impl fmt::Display for SkipReason {
             SkipReason::NotAFile => write!(f, "not a normal file"),
             SkipReason::InUse(e) => write!(f, "in use or cannot be opened ({e})"),
             SkipReason::Changed => write!(f, "changed since the scan"),
+            SkipReason::SelfApp => write!(f, "File Organizer itself"),
+            SkipReason::ProgramFolder => write!(f, "program or project folder"),
         }
     }
 }
@@ -93,6 +106,9 @@ pub fn check_meta(path: &Path, meta: &Metadata, min_age: Duration, now: SystemTi
         Some(n) => n.to_string_lossy().to_string(),
         None => return Check::Skip(SkipReason::NotAFile),
     };
+    if crate::paths::is_self_exe(path, meta.len()) {
+        return Check::Skip(SkipReason::SelfApp);
+    }
     if let Some(r) = name_or_attr_reason(&name, meta) {
         return Check::Skip(r);
     }
@@ -103,7 +119,10 @@ pub fn check_meta(path: &Path, meta: &Metadata, min_age: Duration, now: SystemTi
     if is_recent(modified, min_age, now) {
         return Check::Skip(SkipReason::Recent);
     }
-    Check::Ok { size: meta.len(), modified }
+    Check::Ok {
+        size: meta.len(),
+        modified,
+    }
 }
 
 /// Why a sub-folder must not be entered (links / junctions, hidden or
@@ -118,11 +137,100 @@ pub fn folder_skip_reason(path: &Path, meta: &Metadata) -> Option<SkipReason> {
     if crate::paths::is_protected(path) {
         return Some(SkipReason::System);
     }
-    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if is_program_folder_name(&name) {
+        return Some(SkipReason::ProgramFolder);
+    }
     match attr_reason(&name, meta) {
         Some(SkipReason::CloudOnly) | None => None, // online-only folders: files inside are checked one by one
         r => r,
     }
+}
+
+/// Folders that belong to programs, version control or developer tools
+/// (never entered).
+pub const PROGRAM_FOLDER_NAMES: &[&str] = &[
+    ".git",
+    ".svn",
+    ".hg",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "site-packages",
+    ".gradle",
+    "steamapps",
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".kube",
+    ".docker",
+];
+/// A folder holding any of these is a project folder (never entered).
+pub const PROJECT_MARKERS: &[&str] = &[
+    ".git",
+    "package.json",
+    "Cargo.toml",
+    "pyproject.toml",
+    "requirements.txt",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "CMakeLists.txt",
+];
+/// A folder holding a file with one of these endings is a project folder.
+pub const PROJECT_MARKER_EXTENSIONS: &[&str] = &["sln", "csproj"];
+
+pub fn is_program_folder_name(name: &str) -> bool {
+    PROGRAM_FOLDER_NAMES
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(name))
+}
+
+/// `Some(ProgramFolder)` if a folder with these entry names is a project
+/// folder (a marker file such as `package.json` or `*.sln`) or a program
+/// folder (an `.exe` and a `.dll` directly inside).
+pub fn program_folder_reason<S: AsRef<str>>(entry_names: &[S]) -> Option<SkipReason> {
+    let (mut exe, mut dll) = (false, false);
+    for n in entry_names {
+        let n = n.as_ref();
+        if PROJECT_MARKERS.iter().any(|m| m.eq_ignore_ascii_case(n)) {
+            return Some(SkipReason::ProgramFolder);
+        }
+        let ext = Path::new(n)
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if PROJECT_MARKER_EXTENSIONS.contains(&ext.as_str()) {
+            return Some(SkipReason::ProgramFolder);
+        }
+        exe |= ext == "exe";
+        dll |= ext == "dll";
+    }
+    (exe && dll).then_some(SkipReason::ProgramFolder)
+}
+
+/// [`program_folder_reason`] for a folder on disk (by name, then by what
+/// it holds). A folder that cannot be listed counts as not safe.
+pub fn program_folder_on_disk(dir: &Path) -> Option<SkipReason> {
+    if dir
+        .file_name()
+        .is_some_and(|n| is_program_folder_name(&n.to_string_lossy()))
+    {
+        return Some(SkipReason::ProgramFolder);
+    }
+    let names: Vec<String> = match fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect(),
+        Err(e) => return Some(SkipReason::InUse(e.to_string())),
+    };
+    program_folder_reason(&names)
 }
 
 fn is_recent(modified: SystemTime, min_age: Duration, now: SystemTime) -> bool {
@@ -140,7 +248,10 @@ fn name_or_attr_reason(name: &str, meta: &Metadata) -> Option<SkipReason> {
     if TEMP_PREFIXES.iter().any(|p| lower.starts_with(p)) {
         return Some(SkipReason::Temporary);
     }
-    let ext = Path::new(&lower).extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+    let ext = Path::new(&lower)
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_default();
     if SHORTCUT_EXTENSIONS.contains(&ext.as_str()) {
         return Some(SkipReason::Shortcut);
     }
@@ -162,7 +273,12 @@ fn attr_reason(_name: &str, meta: &Metadata) -> Option<SkipReason> {
         Some(SkipReason::System)
     } else if a & FILE_ATTRIBUTE_HIDDEN != 0 {
         Some(SkipReason::Hidden)
-    } else if a & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_RECALL_ON_OPEN) != 0 {
+    } else if a
+        & (FILE_ATTRIBUTE_OFFLINE
+            | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+            | FILE_ATTRIBUTE_RECALL_ON_OPEN)
+        != 0
+    {
         Some(SkipReason::CloudOnly)
     } else {
         None

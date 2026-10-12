@@ -3,12 +3,13 @@
 //! [`Journal::lock`] (a lock file next to the journal) while it runs.
 
 use crate::fsops::{move_no_replace, path_key};
-use crate::paths::FROM_DESKTOP;
+use crate::paths::{Roots, FROM_DESKTOP};
+use crate::remove::{journal_path_ok, root_of};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -77,7 +78,12 @@ pub struct BatchReport {
 
 impl BatchReport {
     pub fn summary(&self) -> String {
-        format!("{} moved, {} skipped, {} errors", self.moved.len(), self.skipped.len(), self.errors.len())
+        format!(
+            "{} moved, {} skipped, {} errors",
+            self.moved.len(),
+            self.skipped.len(),
+            self.errors.len()
+        )
     }
 
     pub fn recycle_summary(&self) -> String {
@@ -133,7 +139,12 @@ impl Journal {
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
-        OpenOptions::new().create(true).truncate(false).read(true).write(true).open(self.lock_path())
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.lock_path())
     }
 
     /// Waits until no other batch (in any process) is running, then holds
@@ -155,14 +166,29 @@ impl Journal {
         }
     }
 
-    /// Writes one line and flushes it to disk.
+    /// Writes one line and flushes it to disk. If the file does not end
+    /// with a line break (a crash in the middle of a line), one is written
+    /// first so the broken line never swallows this record.
     pub fn append(&self, rec: &Record) -> io::Result<()> {
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
         let mut line = serde_json::to_string(rec).map_err(io::Error::other)?;
         line.push('\n');
-        let mut f = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        let mut f = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(&self.path)?;
+        let len = f.metadata()?.len();
+        if len > 0 {
+            let mut last = [0u8; 1];
+            f.seek(SeekFrom::Start(len - 1))?;
+            f.read_exact(&mut last)?;
+            if last[0] != b'\n' {
+                line.insert(0, '\n');
+            }
+        }
         f.write_all(line.as_bytes())?;
         f.sync_data()
     }
@@ -174,12 +200,18 @@ impl Journal {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(e),
         };
-        Ok(text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+        Ok(text
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect())
     }
 
     /// A new batch id, always larger than any already in the journal.
     pub fn next_batch_id(&self) -> u64 {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         let last = self
             .records()
             .unwrap_or_default()
@@ -228,55 +260,112 @@ impl Journal {
     }
 
     /// Undo the newest batch that still has moves left to undo.
-    pub fn undo_last(&self) -> io::Result<Option<BatchReport>> {
-        self.undo_last_where(|_| true)
+    pub fn undo_last(&self, roots: &Roots) -> io::Result<Option<BatchReport>> {
+        self.undo_last_where(roots, |_| true)
     }
 
     /// Undo the newest batch with this tag that still has moves left.
-    pub fn undo_last_tagged(&self, tag: &str) -> io::Result<Option<BatchReport>> {
-        self.undo_last_where(|b| b.tag == tag)
+    pub fn undo_last_tagged(&self, tag: &str, roots: &Roots) -> io::Result<Option<BatchReport>> {
+        self.undo_last_where(roots, |b| b.tag == tag)
     }
 
-    fn undo_last_where(&self, pick: impl Fn(&BatchSummary) -> bool) -> io::Result<Option<BatchReport>> {
-        let last = self.history()?.into_iter().find(|b| !b.remaining.is_empty() && pick(b));
+    fn undo_last_where(
+        &self,
+        roots: &Roots,
+        pick: impl Fn(&BatchSummary) -> bool,
+    ) -> io::Result<Option<BatchReport>> {
+        let last = self
+            .history()?
+            .into_iter()
+            .find(|b| !b.remaining.is_empty() && pick(b));
         match last {
-            Some(b) => self.undo(b.batch).map(Some),
+            Some(b) => self.undo(b.batch, roots).map(Some),
             None => Ok(None),
         }
     }
 
+    /// Why a journal entry must not be undone (both paths are checked: no
+    /// `..` or `.`, inside a current root and not the root itself, every
+    /// folder on the way normal, never a protected or app-data place).
+    fn entry_problem(&self, e: &Entry, roots: &Roots) -> Option<String> {
+        let app_dir = self.path.parent();
+        for p in [&e.new, &e.old] {
+            if let Err(why) = journal_path_ok(roots, p, app_dir) {
+                return Some(format!("journal entry looks wrong ({why})"));
+            }
+        }
+        None
+    }
+
     /// Move every file of `batch` back to where it was (renames get their
     /// old name back). A file is skipped (and reported) if it is gone, was
-    /// changed or renamed again, or its old spot / old name is taken.
-    pub fn undo(&self, batch: u64) -> io::Result<BatchReport> {
+    /// changed or renamed again, or its old spot / old name is taken, and
+    /// if the journal entry itself looks wrong (it is never trusted blindly).
+    pub fn undo(&self, batch: u64, roots: &Roots) -> io::Result<BatchReport> {
         let _lock = self.lock()?;
         let summary = self.history()?.into_iter().find(|b| b.batch == batch);
-        let mut report = BatchReport { batch, ..Default::default() };
+        let mut report = BatchReport {
+            batch,
+            ..Default::default()
+        };
         let Some(summary) = summary else {
             return Ok(report);
         };
+        if let Err(err) = roots.validate() {
+            report.errors.push((PathBuf::new(), err.to_string()));
+            return Ok(report);
+        }
         for e in summary.remaining.iter().rev() {
+            if let Some(why) = self.entry_problem(e, roots) {
+                report.skipped.push((e.new.clone(), why));
+                continue;
+            }
             let meta = match fs::symlink_metadata(&e.new) {
                 Ok(m) if m.is_file() => m,
                 _ => {
-                    report.skipped.push((e.new.clone(), "file is no longer where it was moved to".into()));
+                    report.skipped.push((
+                        e.new.clone(),
+                        "file is no longer where it was moved to".into(),
+                    ));
                     continue;
                 }
             };
             let modified = meta.modified().map(to_ns).ok();
             if meta.len() != e.size || modified != Some(e.modified_ns) {
-                report.skipped.push((e.new.clone(), "file was changed after it was moved".into()));
+                report
+                    .skipped
+                    .push((e.new.clone(), "file was changed after it was moved".into()));
                 continue;
             }
             if fs::symlink_metadata(&e.old).is_ok() {
-                report.skipped.push((e.new.clone(), format!("original place is taken: {}", e.old.display())));
+                report.skipped.push((
+                    e.new.clone(),
+                    format!("original place is taken: {}", e.old.display()),
+                ));
                 continue;
             }
             if let Some(dir) = e.old.parent() {
                 if !dir.is_dir() {
-                    report.skipped.push((e.new.clone(), format!("original folder is gone: {}", dir.display())));
+                    report.skipped.push((
+                        e.new.clone(),
+                        format!("original folder is gone: {}", dir.display()),
+                    ));
                     continue;
                 }
+            }
+            if crate::paths::is_self_exe(&e.new, meta.len()) {
+                report.skipped.push((
+                    e.new.clone(),
+                    crate::safety::SkipReason::SelfApp.to_string(),
+                ));
+                continue;
+            }
+            // Every folder on the way must still be a normal folder.
+            if let Err(why) = root_of(roots, &e.new).and_then(|_| root_of(roots, &e.old)) {
+                report
+                    .skipped
+                    .push((e.new.clone(), format!("journal entry looks wrong ({why})")));
+                continue;
             }
             if let Err(err) = move_no_replace(&e.new, &e.old) {
                 report.errors.push((e.new.clone(), err.to_string()));
@@ -285,7 +374,10 @@ impl Journal {
             let mut rec = e.clone();
             rec.time = Local::now().to_rfc3339();
             if let Err(err) = self.append(&Record::Undo(rec)) {
-                report.errors.push((e.old.clone(), format!("moved back, but journal could not be written: {err}")));
+                report.errors.push((
+                    e.old.clone(),
+                    format!("moved back, but journal could not be written: {err}"),
+                ));
             }
             if e.tag != TAG_RENAME {
                 remove_empty_created_dirs(&e.new);
@@ -320,9 +412,16 @@ fn remove_empty_created_dirs(new_path: &Path) {
 }
 
 fn is_month_name(p: &Path) -> bool {
-    let n = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let n = p
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     let b = n.as_bytes();
-    b.len() == 7 && b[4] == b'-' && b.iter().enumerate().all(|(i, c)| i == 4 || c.is_ascii_digit())
+    b.len() == 7
+        && b[4] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || c.is_ascii_digit())
 }
 
 fn to_ns(t: SystemTime) -> i64 {

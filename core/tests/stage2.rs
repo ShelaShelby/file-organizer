@@ -1,10 +1,14 @@
 //! Stage 2 tests: duplicates, big / old lists, Recycle Bin removal, settings.
 
 use organizer_core::bigold::{find_big_old, BigOldOptions};
-use organizer_core::dupes::{check_choices, find_duplicates, remove_duplicates, space_freed, DupOptions, GroupChoice};
+use organizer_core::dupes::{
+    check_choices, find_duplicates, remove_duplicates, space_freed, DupOptions, GroupChoice,
+};
 use organizer_core::journal::Record;
 use organizer_core::remove::{recycle_files, root_of};
-use organizer_core::{Journal, Progress, RecycleBin, Recycler, RootKind, Roots, ScannedFile, Settings};
+use organizer_core::{
+    Journal, Progress, RecycleBin, Recycler, RootKind, Roots, ScannedFile, Settings,
+};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -26,7 +30,10 @@ impl Env {
     fn new() -> Env {
         let parent = Path::new(env!("CARGO_TARGET_TMPDIR"));
         fs::create_dir_all(parent).unwrap();
-        let tmp = tempfile::Builder::new().prefix("fo-s2").tempdir_in(parent).unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("fo-s2")
+            .tempdir_in(parent)
+            .unwrap();
         let base = tmp.path().to_path_buf();
         let roots = Roots {
             downloads: base.join("Downloads"),
@@ -38,19 +45,42 @@ impl Env {
         }
         let journal = Journal::new(base.join("appdata").join("journal.jsonl"));
         let bin = TestBin::new(base.join("bin"));
-        Env { _tmp: tmp, base, roots, journal, settings: Settings::default(), bin }
+        Env {
+            _tmp: tmp,
+            base,
+            roots,
+            journal,
+            settings: Settings::default(),
+            bin,
+        }
     }
 
     fn dupes(&self) -> organizer_core::dupes::DupScan {
-        find_duplicates(&self.roots, &DupOptions::new(&self.settings, SystemTime::now()), &Progress::default()).unwrap()
+        find_duplicates(
+            &self.roots,
+            &DupOptions::new(&self.settings, SystemTime::now()),
+            &Progress::default(),
+        )
+        .unwrap()
     }
 
     fn big_old(&self) -> organizer_core::bigold::BigOldScan {
-        find_big_old(&self.roots, &BigOldOptions::new(&self.settings, SystemTime::now()), &Progress::default()).unwrap()
+        find_big_old(
+            &self.roots,
+            &BigOldOptions::new(&self.settings, SystemTime::now()),
+            &Progress::default(),
+        )
+        .unwrap()
     }
 
     fn remove(&self, choices: &[GroupChoice]) -> organizer_core::BatchReport {
-        remove_duplicates(&self.roots, choices, &self.journal, &self.bin, SystemTime::now())
+        remove_duplicates(
+            &self.roots,
+            choices,
+            &self.journal,
+            &self.bin,
+            SystemTime::now(),
+        )
     }
 }
 
@@ -65,7 +95,11 @@ struct TestBin {
 impl TestBin {
     fn new(dir: PathBuf) -> TestBin {
         fs::create_dir_all(&dir).unwrap();
-        TestBin { dir, calls: Mutex::new(Vec::new()), fail: false }
+        TestBin {
+            dir,
+            calls: Mutex::new(Vec::new()),
+            fail: false,
+        }
     }
     fn calls(&self) -> Vec<PathBuf> {
         self.calls.lock().unwrap().clone()
@@ -105,11 +139,16 @@ fn set_age(p: &Path, age: Duration) {
 
 /// `n` bytes of content that depends on `seed`.
 fn data(seed: u8, n: usize) -> Vec<u8> {
-    (0..n).map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed)).collect()
+    (0..n)
+        .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed))
+        .collect()
 }
 
 fn names(files: &[ScannedFile]) -> Vec<String> {
-    files.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().to_string()).collect()
+    files
+        .iter()
+        .map(|f| f.path.file_name().unwrap().to_string_lossy().to_string())
+        .collect()
 }
 
 fn group_names(scan: &organizer_core::dupes::DupScan) -> Vec<Vec<String>> {
@@ -127,7 +166,10 @@ fn group_names(scan: &organizer_core::dupes::DupScan) -> Vec<Vec<String>> {
 }
 
 fn choice(g: &organizer_core::dupes::DupGroup) -> GroupChoice {
-    GroupChoice { files: g.files.clone(), keep: g.default_keep() }
+    GroupChoice {
+        files: g.files.clone(),
+        keep: g.default_keep(),
+    }
 }
 
 // ---------------------------------------------------------------- finding
@@ -136,10 +178,21 @@ fn choice(g: &organizer_core::dupes::DupGroup) -> GroupChoice {
 fn duplicates_found_by_content_not_name() {
     let env = Env::new();
     file(&env.roots.downloads, "report.pdf", &data(1, 5000), days(10));
-    file(&env.roots.documents, "copy of something.bin", &data(1, 5000), days(5));
+    file(
+        &env.roots.documents,
+        "copy of something.bin",
+        &data(1, 5000),
+        days(5),
+    );
     file(&env.roots.desktop, "report.pdf", &data(2, 5000), days(5)); // same name, other content
     let scan = env.dupes();
-    assert_eq!(group_names(&scan), vec![vec!["copy of something.bin".to_string(), "report.pdf".to_string()]]);
+    assert_eq!(
+        group_names(&scan),
+        vec![vec![
+            "copy of something.bin".to_string(),
+            "report.pdf".to_string()
+        ]]
+    );
     assert_eq!(scan.groups[0].files[0].root, RootKind::Downloads);
 }
 
@@ -179,27 +232,51 @@ fn empty_and_tiny_files_ignored() {
     file(&env.roots.downloads, "tiny2.txt", &data(1, 100), days(5));
     assert!(env.dupes().groups.is_empty(), "default minimum is 1 KB");
     env.settings.min_duplicate_kb = 0;
-    assert_eq!(group_names(&env.dupes()), vec![vec!["tiny1.txt".to_string(), "tiny2.txt".to_string()]]);
+    assert_eq!(
+        group_names(&env.dupes()),
+        vec![vec!["tiny1.txt".to_string(), "tiny2.txt".to_string()]]
+    );
 }
 
 #[test]
 fn subfolders_are_scanned() {
     let env = Env::new();
-    let deep = env.roots.documents.join("Projects").join("2024").join("old");
+    let deep = env
+        .roots
+        .documents
+        .join("Projects")
+        .join("2024")
+        .join("old");
     file(&deep, "deep.docx", &data(4, 2048), days(5));
-    file(&env.roots.downloads.join("stuff"), "top.docx", &data(4, 2048), days(5));
-    assert_eq!(group_names(&env.dupes()), vec![vec!["deep.docx".to_string(), "top.docx".to_string()]]);
+    file(
+        &env.roots.downloads.join("stuff"),
+        "top.docx",
+        &data(4, 2048),
+        days(5),
+    );
+    assert_eq!(
+        group_names(&env.dupes()),
+        vec![vec!["deep.docx".to_string(), "top.docx".to_string()]]
+    );
 }
 
 #[test]
 fn default_keep_is_oldest_copy() {
     let env = Env::new();
     file(&env.roots.downloads, "newer.jpg", &data(5, 2048), days(3));
-    file(&env.roots.documents, "oldest.jpg", &data(5, 2048), days(300));
+    file(
+        &env.roots.documents,
+        "oldest.jpg",
+        &data(5, 2048),
+        days(300),
+    );
     file(&env.roots.desktop, "middle.jpg", &data(5, 2048), days(30));
     let scan = env.dupes();
     let g = &scan.groups[0];
-    assert_eq!(names(&g.files), vec!["oldest.jpg", "middle.jpg", "newer.jpg"]);
+    assert_eq!(
+        names(&g.files),
+        vec!["oldest.jpg", "middle.jpg", "newer.jpg"]
+    );
     assert_eq!(g.default_keep(), vec![true, false, false]);
 }
 
@@ -208,10 +285,23 @@ fn skip_rules_apply_to_duplicates() {
     let env = Env::new();
     let d = data(6, 2048);
     file(&env.roots.downloads, "real.dat", &d, days(5));
-    for n in ["a.tmp", "b.crdownload", "c.part", "~$d.docx", "e.lnk", "f.url", "desktop.ini"] {
+    for n in [
+        "a.tmp",
+        "b.crdownload",
+        "c.part",
+        "~$d.docx",
+        "e.lnk",
+        "f.url",
+        "desktop.ini",
+    ] {
         file(&env.roots.downloads, n, &d, days(5));
     }
-    file(&env.roots.downloads, "just-now.dat", &d, Duration::from_secs(10)); // may still be downloading
+    file(
+        &env.roots.downloads,
+        "just-now.dat",
+        &d,
+        Duration::from_secs(10),
+    ); // may still be downloading
     let scan = env.dupes();
     assert!(scan.groups.is_empty(), "{:?}", group_names(&scan));
     assert!(scan.skipped.count >= 8);
@@ -224,13 +314,22 @@ fn hidden_files_and_folders_skipped_unix() {
     let d = data(6, 2048);
     file(&env.roots.downloads, "real.dat", &d, days(5));
     file(&env.roots.downloads, ".hidden.dat", &d, days(5));
-    file(&env.roots.downloads.join(".hiddendir"), "inside.dat", &d, days(5));
+    file(
+        &env.roots.downloads.join(".hiddendir"),
+        "inside.dat",
+        &d,
+        days(5),
+    );
     assert!(env.dupes().groups.is_empty());
 }
 
 #[cfg(windows)]
 fn attrib(flag: &str, p: &Path) {
-    let st = std::process::Command::new("attrib").arg(flag).arg(p).status().unwrap();
+    let st = std::process::Command::new("attrib")
+        .arg(flag)
+        .arg(p)
+        .status()
+        .unwrap();
     assert!(st.success());
 }
 
@@ -250,7 +349,9 @@ fn hidden_and_system_files_and_folders_skipped_windows() {
     assert!(env.dupes().groups.is_empty());
     let mut o = BigOldOptions::new(&env.settings, SystemTime::now());
     o.big_bytes = 1;
-    let big = find_big_old(&env.roots, &o, &Progress::default()).unwrap().big;
+    let big = find_big_old(&env.roots, &o, &Progress::default())
+        .unwrap()
+        .big;
     assert_eq!(names(&big), vec!["real.dat"]);
     attrib("-h", &h);
     attrib("-s", &s);
@@ -290,7 +391,12 @@ fn junction_folders_not_entered_windows() {
     let target = file(&real, "a.dat", &d, days(5));
     file(&env.roots.downloads, "b.dat", &d, days(5));
     let j = env.roots.documents.join("Link");
-    let st = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&j).arg(&real).status().unwrap();
+    let st = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&j)
+        .arg(&real)
+        .status()
+        .unwrap();
     assert!(st.success());
     assert!(env.dupes().groups.is_empty());
     // A path through the junction is refused for removal too.
@@ -308,11 +414,14 @@ fn symlinks_not_followed() {
     let link = env.roots.downloads.join("link.dat");
     let dirlink = env.roots.documents.join("dirlink");
     #[cfg(unix)]
-    let made =
-        std::os::unix::fs::symlink(&real, &link).and(std::os::unix::fs::symlink(env.base.join("outside"), &dirlink));
+    let made = std::os::unix::fs::symlink(&real, &link).and(std::os::unix::fs::symlink(
+        env.base.join("outside"),
+        &dirlink,
+    ));
     #[cfg(windows)]
-    let made = std::os::windows::fs::symlink_file(&real, &link)
-        .and(std::os::windows::fs::symlink_dir(env.base.join("outside"), &dirlink));
+    let made = std::os::windows::fs::symlink_file(&real, &link).and(
+        std::os::windows::fs::symlink_dir(env.base.join("outside"), &dirlink),
+    );
     if made.is_err() {
         eprintln!("symlinks not permitted here; skipping");
         return;
@@ -346,7 +455,10 @@ fn confirm_sends_unkept_copies_to_recycler_and_journals() {
     assert!(keep.is_file() && !dup.exists());
     assert_eq!(env.bin.calls(), vec![dup.clone()]);
     // Not deleted: the content is in the (test) Recycle Bin.
-    let in_bin: Vec<_> = fs::read_dir(&env.bin.dir).unwrap().map(|e| e.unwrap().path()).collect();
+    let in_bin: Vec<_> = fs::read_dir(&env.bin.dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
     assert_eq!(fs::read(&in_bin[0]).unwrap(), data(5, 4096));
     // Journal line + history entry with the old path.
     let recs = env.journal.records().unwrap();
@@ -354,7 +466,10 @@ fn confirm_sends_unkept_copies_to_recycler_and_journals() {
     let h = env.journal.history().unwrap();
     assert_eq!(h[0].recycled.len(), 1);
     assert_eq!(h[0].recycled[0].old, dup);
-    assert!(h[0].remaining.is_empty(), "recycled files are not offered for move-undo");
+    assert!(
+        h[0].remaining.is_empty(),
+        "recycled files are not offered for move-undo"
+    );
 }
 
 #[test]
@@ -365,7 +480,11 @@ fn user_can_change_kept_copy_and_untick_groups() {
     let c = file(&env.roots.downloads, "c.txt", &data(6, 4096), days(2));
     let d = file(&env.roots.desktop, "d.txt", &data(6, 4096), days(3));
     let scan = env.dupes();
-    let g1 = scan.groups.iter().find(|g| g.files.iter().any(|f| f.path == a)).unwrap();
+    let g1 = scan
+        .groups
+        .iter()
+        .find(|g| g.files.iter().any(|f| f.path == a))
+        .unwrap();
     let mut ch = choice(g1);
     ch.keep = ch.files.iter().map(|f| f.path == b).collect(); // keep the newer one instead
                                                               // The other group is unticked: simply not passed in.
@@ -382,7 +501,10 @@ fn never_leaves_a_group_with_zero_copies() {
     let scan = env.dupes();
     let mut ch = choice(&scan.groups[0]);
     ch.keep = vec![false, false];
-    assert!(check_choices(std::slice::from_ref(&ch)).is_some(), "Confirm must be blocked");
+    assert!(
+        check_choices(std::slice::from_ref(&ch)).is_some(),
+        "Confirm must be blocked"
+    );
     let r = env.remove(&[ch.clone()]);
     assert!(r.recycled.is_empty());
     assert!(a.is_file() && b.is_file());
@@ -453,7 +575,12 @@ fn recycler_failure_leaves_file_and_reports_it() {
 #[test]
 fn removal_refused_outside_roots_and_in_protected_places() {
     let env = Env::new();
-    let outside = file(&env.base.join("elsewhere"), "x.bin", &data(1, 2048), days(30));
+    let outside = file(
+        &env.base.join("elsewhere"),
+        "x.bin",
+        &data(1, 2048),
+        days(30),
+    );
     let f = ScannedFile {
         root: RootKind::Downloads,
         path: outside.clone(),
@@ -463,11 +590,19 @@ fn removal_refused_outside_roots_and_in_protected_places() {
     let r = recycle_files(&env.roots, &[f], &env.journal, &env.bin, SystemTime::now());
     assert_eq!(r.errors.len(), 1);
     assert!(outside.is_file() && env.bin.calls().is_empty());
-    let dotdot = env.roots.downloads.join("..").join("elsewhere").join("x.bin");
+    let dotdot = env
+        .roots
+        .downloads
+        .join("..")
+        .join("elsewhere")
+        .join("x.bin");
     assert!(root_of(&env.roots, &dotdot).is_err());
     let appdata = env.roots.downloads.join("AppData").join("x.bin");
     assert!(root_of(&env.roots, &appdata).is_err());
-    assert_eq!(root_of(&env.roots, &env.roots.downloads.join("ok.bin")), Ok(RootKind::Downloads));
+    assert_eq!(
+        root_of(&env.roots, &env.roots.downloads.join("ok.bin")),
+        Ok(RootKind::Downloads)
+    );
 }
 
 /// The real Recycle Bin: the file must end up IN the Recycle Bin (its
@@ -476,12 +611,22 @@ fn removal_refused_outside_roots_and_in_protected_places() {
 #[test]
 fn real_windows_recycle_bin() {
     let env = Env::new();
-    let p = file(&env.roots.downloads, "recycle-me.txt", b"stage 2 recycle test", days(5));
-    let place = RecycleBin.recycle(&p).expect("Recycle Bin should work on this drive");
+    let p = file(
+        &env.roots.downloads,
+        "recycle-me.txt",
+        b"stage 2 recycle test",
+        days(5),
+    );
+    let place = RecycleBin
+        .recycle(&p)
+        .expect("Recycle Bin should work on this drive");
     eprintln!("recycled to {place:?}");
     assert!(!p.exists());
     let place = place.expect("Windows reports the place in the Recycle Bin");
-    assert!(place.to_string_lossy().to_lowercase().contains("$recycle.bin"));
+    assert!(place
+        .to_string_lossy()
+        .to_lowercase()
+        .contains("$recycle.bin"));
     assert_eq!(fs::read(&place).unwrap(), b"stage 2 recycle test");
 }
 
@@ -521,18 +666,35 @@ fn big_list_uses_size_setting_biggest_first() {
 fn old_list_uses_days_setting_oldest_first() {
     let mut env = Env::new();
     file(&env.roots.downloads, "new.txt", b"x", days(10));
-    file(&env.roots.documents.join("a").join("b"), "older.txt", b"x", days(400));
+    file(
+        &env.roots.documents.join("a").join("b"),
+        "older.txt",
+        b"x",
+        days(400),
+    );
     file(&env.roots.desktop, "oldest.txt", b"x", days(900));
-    assert_eq!(names(&env.big_old().old), vec!["oldest.txt", "older.txt"], "default 365 days");
+    assert_eq!(
+        names(&env.big_old().old),
+        vec!["oldest.txt", "older.txt"],
+        "default 365 days"
+    );
     env.settings.old_days = 5;
-    assert_eq!(names(&env.big_old().old), vec!["oldest.txt", "older.txt", "new.txt"]);
+    assert_eq!(
+        names(&env.big_old().old),
+        vec!["oldest.txt", "older.txt", "new.txt"]
+    );
 }
 
 #[test]
 fn big_old_lists_are_capped() {
     let env = Env::new();
     for i in 0..5 {
-        file(&env.roots.downloads, &format!("f{i}.txt"), b"x", days(400 + i));
+        file(
+            &env.roots.downloads,
+            &format!("f{i}.txt"),
+            b"x",
+            days(400 + i),
+        );
     }
     let mut o = BigOldOptions::new(&env.settings, SystemTime::now());
     o.limit = 3;
@@ -549,7 +711,13 @@ fn big_old_scan_changes_nothing_and_recycle_uses_same_rules() {
     let scan = env.big_old();
     assert!(a.is_file() && b.is_file());
     fs::write(&b, "changed").unwrap(); // changed after scan
-    let r = recycle_files(&env.roots, &scan.old, &env.journal, &env.bin, SystemTime::now());
+    let r = recycle_files(
+        &env.roots,
+        &scan.old,
+        &env.journal,
+        &env.bin,
+        SystemTime::now(),
+    );
     assert_eq!(r.recycled, vec![a.clone()]);
     assert_eq!(r.skipped.len(), 1);
     assert!(!a.exists() && b.is_file());
@@ -564,7 +732,10 @@ fn settings_defaults_and_round_trip() {
     let path = env.base.join("appdata").join("settings.json");
     let (s, warn) = Settings::load_or_create(&path);
     assert!(warn.is_none());
-    assert_eq!((s.recent_days, s.big_file_mb, s.old_days, s.min_duplicate_kb), (7, 500, 365, 1));
+    assert_eq!(
+        (s.recent_days, s.big_file_mb, s.old_days, s.min_duplicate_kb),
+        (7, 500, 365, 1)
+    );
     let mut e = s.clone();
     e.big_file_mb = 2000;
     e.old_days = 30;
@@ -610,7 +781,10 @@ fn unreadable_settings_file_is_never_overwritten() {
 fn saving_fixes_out_of_range_values() {
     let env = Env::new();
     let path = env.base.join("settings.json");
-    let s = Settings { big_file_mb: 0, ..Settings::default() };
+    let s = Settings {
+        big_file_mb: 0,
+        ..Settings::default()
+    };
     s.save(&path).unwrap();
     assert_eq!(Settings::load_or_create(&path).0.big_file_mb, 500);
 }

@@ -1,2 +1,5 @@
 // App icon (Explorer, taskbar, tray). Resource id 1 is loaded by the tray.
 1 ICON "icon.ico"
+// Application manifest (1 = CREATEPROCESS_MANIFEST_RESOURCE_ID, 24 = RT_MANIFEST):
+// runs as the user (never asks for admin), Windows 10/11, per-monitor DPI.
+1 24 "app.manifest"

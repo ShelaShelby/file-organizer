@@ -43,7 +43,11 @@ pub struct BigOldScan {
     pub files_checked: u64,
 }
 
-pub fn find_big_old(roots: &Roots, opts: &BigOldOptions, progress: &Progress) -> io::Result<BigOldScan> {
+pub fn find_big_old(
+    roots: &Roots,
+    opts: &BigOldOptions,
+    progress: &Progress,
+) -> io::Result<BigOldScan> {
     let mut scan = BigOldScan::default();
     let mut big = Vec::new();
     let mut old = Vec::new();
@@ -51,13 +55,21 @@ pub fn find_big_old(roots: &Roots, opts: &BigOldOptions, progress: &Progress) ->
         if f.size >= opts.big_bytes {
             big.push(f.clone());
         }
-        if opts.now.duration_since(f.modified).is_ok_and(|age| age >= opts.old_age) {
+        if opts
+            .now
+            .duration_since(f.modified)
+            .is_ok_and(|age| age >= opts.old_age)
+        {
             old.push(f);
         }
     })?;
     scan.files_checked = progress.files.load(Ordering::Relaxed);
     big.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.path.cmp(&b.path)));
-    old.sort_by(|a, b| a.modified.cmp(&b.modified).then_with(|| a.path.cmp(&b.path)));
+    old.sort_by(|a, b| {
+        a.modified
+            .cmp(&b.modified)
+            .then_with(|| a.path.cmp(&b.path))
+    });
     scan.big = top_unlocked(big, opts.limit, &mut scan.skipped, progress)?;
     scan.old = top_unlocked(old, opts.limit, &mut scan.skipped, progress)?;
     Ok(scan)

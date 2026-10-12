@@ -20,7 +20,10 @@ fn intro(ui: &mut egui::Ui, title: &str, sub: &str) {
 }
 
 fn file_name(f: &ScannedFile) -> String {
-    f.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+    f.path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 fn folder(app: &App, f: &ScannedFile) -> String {
@@ -37,17 +40,20 @@ fn skipped_list(ui: &mut egui::Ui, s: &Skipped) {
         return;
     }
     egui::CollapsingHeader::new(format!("Left alone ({n})")).show(ui, |ui| {
-        egui::ScrollArea::vertical().id_salt("skipped").max_height(120.0).show(ui, |ui| {
-            for (p, r) in &s.items {
-                ui.weak(format!("{}  —  {r}", p.display()));
-            }
-            if s.count > s.items.len() {
-                ui.weak(format!("… and {} more", s.count - s.items.len()));
-            }
-            for (p, e) in &s.errors {
-                ui.colored_label(RED, format!("{}  —  {e}", p.display()));
-            }
-        });
+        egui::ScrollArea::vertical()
+            .id_salt("skipped")
+            .max_height(120.0)
+            .show(ui, |ui| {
+                for (p, r) in &s.items {
+                    ui.weak(format!("{}  —  {r}", p.display()));
+                }
+                if s.count > s.items.len() {
+                    ui.weak(format!("… and {} more", s.count - s.items.len()));
+                }
+                for (p, e) in &s.errors {
+                    ui.colored_label(RED, format!("{}  —  {e}", p.display()));
+                }
+            });
     });
 }
 
@@ -61,10 +67,19 @@ pub fn sort_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         }
         let n = app.checked.iter().filter(|c| **c).count();
         let can_confirm = can && app.plan.is_some() && n > 0 && app.journal.is_some();
-        if ui.add_enabled(can_confirm, egui::Button::new(format!("✔ Confirm ({n})"))).clicked() {
+        if ui
+            .add_enabled(can_confirm, egui::Button::new(format!("✔ Confirm ({n})")))
+            .clicked()
+        {
             app.start_confirm(ctx);
         }
-        if ui.add_enabled(!app.busy() && app.journal.is_some(), egui::Button::new("Undo last")).clicked() {
+        if ui
+            .add_enabled(
+                !app.busy() && app.journal.is_some(),
+                egui::Button::new("Undo last"),
+            )
+            .clicked()
+        {
             app.start_undo(ctx, None);
         }
     });
@@ -77,9 +92,19 @@ pub fn sort_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         );
         return;
     };
-    let total: u64 = plan.moves.iter().zip(&app.checked).filter(|(_, c)| **c).map(|(m, _)| m.size).sum();
+    let total: u64 = plan
+        .moves
+        .iter()
+        .zip(&app.checked)
+        .filter(|(_, c)| **c)
+        .map(|(m, _)| m.size)
+        .sum();
     ui.horizontal(|ui| {
-        ui.strong(format!("{} to move ({})", plural(plan.moves.len(), "file"), human_size(total)));
+        ui.strong(format!(
+            "{} to move ({})",
+            plural(plan.moves.len(), "file"),
+            human_size(total)
+        ));
         if ui.small_button("Select all").clicked() {
             app.checked.iter_mut().for_each(|c| *c = true);
         }
@@ -88,10 +113,15 @@ pub fn sort_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         }
     });
     if !plan.skipped.is_empty() || !plan.errors.is_empty() {
-        egui::CollapsingHeader::new(format!("Left alone ({})", plan.skipped.len() + plan.errors.len())).show(
-            ui,
-            |ui| {
-                egui::ScrollArea::vertical().id_salt("skipped").max_height(120.0).show(ui, |ui| {
+        egui::CollapsingHeader::new(format!(
+            "Left alone ({})",
+            plan.skipped.len() + plan.errors.len()
+        ))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("skipped")
+                .max_height(120.0)
+                .show(ui, |ui| {
                     for (p, r) in &plan.skipped {
                         ui.weak(format!("{}  —  {r}", p.display()));
                     }
@@ -99,8 +129,7 @@ pub fn sort_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
                         ui.colored_label(RED, format!("{}  —  {e}", p.display()));
                     }
                 });
-            },
-        );
+        });
     }
     if plan.moves.is_empty() {
         ui.add_space(20.0);
@@ -133,14 +162,20 @@ pub fn sort_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
                     ui.checkbox(&mut checked[i], "");
                 });
                 row.col(|ui| {
-                    ui.label(m.source.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())
-                        .on_hover_text(m.source.display().to_string());
+                    ui.label(
+                        m.source
+                            .file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_default(),
+                    )
+                    .on_hover_text(m.source.display().to_string());
                 });
                 row.col(|ui| {
                     ui.label(m.root.label());
                 });
                 row.col(|ui| {
-                    ui.label(short(&m.target, roots)).on_hover_text(m.target.display().to_string());
+                    ui.label(short(&m.target, roots))
+                        .on_hover_text(m.target.display().to_string());
                 });
                 row.col(|ui| {
                     ui.label(human_size(m.size));
@@ -157,14 +192,26 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     let problem = check_choices(&choices);
     let to_go: usize = choices.iter().map(|c| c.to_remove().count()).sum();
     ui.horizontal(|ui| {
-        if ui.add_enabled(can, egui::Button::new("🔍 Find duplicates")).clicked() {
+        if ui
+            .add_enabled(can, egui::Button::new("🔍 Find duplicates"))
+            .clicked()
+        {
             app.start_dupes(ctx);
         }
         let can_confirm = can && app.journal.is_some() && problem.is_none() && to_go > 0;
-        if ui.add_enabled(can_confirm, egui::Button::new(format!("🗑 Confirm ({to_go})"))).clicked() {
+        if ui
+            .add_enabled(
+                can_confirm,
+                egui::Button::new(format!("🗑 Confirm ({to_go})")),
+            )
+            .clicked()
+        {
             app.pending = Some(Pending::Duplicates(choices.clone()));
         }
-        ui.weak(format!("Ignores files under {} KB.", app.settings.min_duplicate_kb));
+        ui.weak(format!(
+            "Ignores files under {} KB.",
+            app.settings.min_duplicate_kb
+        ));
     });
     ui.separator();
     let Some(view) = &mut app.dupes else {
@@ -188,7 +235,10 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     skipped_list(ui, &view.scan.skipped);
     if view.scan.groups.is_empty() {
         ui.add_space(20.0);
-        ui.label(format!("No duplicates found ({} checked).", plural(view.scan.files_checked as usize, "file")));
+        ui.label(format!(
+            "No duplicates found ({} checked).",
+            plural(view.scan.files_checked as usize, "file")
+        ));
         return;
     }
     ui.weak(
@@ -201,7 +251,9 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         .groups
         .iter()
         .enumerate()
-        .flat_map(|(g, grp)| std::iter::once((g, None)).chain((0..grp.files.len()).map(move |f| (g, Some(f)))))
+        .flat_map(|(g, grp)| {
+            std::iter::once((g, None)).chain((0..grp.files.len()).map(move |f| (g, Some(f))))
+        })
         .collect();
     let row_h = row_height(ui);
     let roots = app.roots.clone();
@@ -254,7 +306,10 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
                         let included = view.include[g];
                         row.col(|ui| {
                             ui.add_space(18.0);
-                            ui.add_enabled(included, egui::Checkbox::without_text(&mut view.keep[g][i]));
+                            ui.add_enabled(
+                                included,
+                                egui::Checkbox::without_text(&mut view.keep[g][i]),
+                            );
                         });
                         row.col(|ui| {
                             let name = file_name(file);
@@ -264,11 +319,15 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
                             } else {
                                 egui::RichText::new(name)
                             };
-                            ui.label(text).on_hover_text(file.path.display().to_string());
+                            ui.label(text)
+                                .on_hover_text(file.path.display().to_string());
                         });
                         row.col(|ui| {
                             let dir = file.path.parent().unwrap_or(&file.path);
-                            let s = roots.as_ref().map(|r| short(dir, r)).unwrap_or_else(|| dir.display().to_string());
+                            let s = roots
+                                .as_ref()
+                                .map(|r| short(dir, r))
+                                .unwrap_or_else(|| dir.display().to_string());
                             ui.label(s).on_hover_text(dir.display().to_string());
                         });
                         row.col(|ui| {
@@ -288,7 +347,10 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
 pub fn bigold_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     let can = !app.busy() && app.roots.is_some();
     ui.horizontal(|ui| {
-        if ui.add_enabled(can, egui::Button::new("🔍 Find big and old files")).clicked() {
+        if ui
+            .add_enabled(can, egui::Button::new("🔍 Find big and old files"))
+            .clicked()
+        {
             app.start_bigold(ctx);
         }
         ui.weak(format!(
@@ -306,8 +368,16 @@ pub fn bigold_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         return;
     };
     ui.horizontal(|ui| {
-        ui.selectable_value(&mut view.show_old, false, format!("Big files ({})", view.scan.big.len()));
-        ui.selectable_value(&mut view.show_old, true, format!("Old files ({})", view.scan.old.len()));
+        ui.selectable_value(
+            &mut view.show_old,
+            false,
+            format!("Big files ({})", view.scan.big.len()),
+        );
+        ui.selectable_value(
+            &mut view.show_old,
+            true,
+            format!("Old files ({})", view.scan.old.len()),
+        );
     });
     if view.show_old {
         ui.weak(
@@ -315,7 +385,11 @@ pub fn bigold_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         );
     }
     skipped_list(ui, &view.scan.skipped);
-    let list = if view.show_old { view.scan.old.clone() } else { view.scan.big.clone() };
+    let list = if view.show_old {
+        view.scan.old.clone()
+    } else {
+        view.scan.big.clone()
+    };
     if list.is_empty() {
         ui.add_space(20.0);
         ui.label("Nothing on this list.");
@@ -347,7 +421,8 @@ pub fn bigold_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
                 let i = row.index();
                 let f = &list[i];
                 row.col(|ui| {
-                    ui.label(file_name(f)).on_hover_text(f.path.display().to_string());
+                    ui.label(file_name(f))
+                        .on_hover_text(f.path.display().to_string());
                 });
                 row.col(|ui| {
                     ui.label(&folders[i]);
@@ -364,7 +439,10 @@ pub fn bigold_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
                             open_err = Some(format!("Could not open Explorer: {e}"));
                         }
                     }
-                    if ui.add_enabled(!busy, egui::Button::new("🗑 Recycle").small()).clicked() {
+                    if ui
+                        .add_enabled(!busy, egui::Button::new("🗑 Recycle").small())
+                        .clicked()
+                    {
                         recycle = Some(f.clone());
                     }
                 });
@@ -384,11 +462,20 @@ pub fn rename_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     let can = !app.busy() && app.roots.is_some();
     let n = app.rename_checked.iter().filter(|c| **c).count();
     ui.horizontal(|ui| {
-        if ui.add_enabled(can, egui::Button::new("🔍 Find messy names")).clicked() {
+        if ui
+            .add_enabled(can, egui::Button::new("🔍 Find messy names"))
+            .clicked()
+        {
             app.start_renames(ctx);
         }
         let can_confirm = can && app.renames.is_some() && n > 0 && app.journal.is_some();
-        if ui.add_enabled(can_confirm, egui::Button::new(format!("✔ Rename ticked ({n})"))).clicked() {
+        if ui
+            .add_enabled(
+                can_confirm,
+                egui::Button::new(format!("✔ Rename ticked ({n})")),
+            )
+            .clicked()
+        {
             app.start_rename_confirm(ctx);
         }
     });
@@ -411,18 +498,28 @@ pub fn rename_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         }
     });
     if !scan.conflicts.is_empty() {
-        egui::CollapsingHeader::new(format!("Not renamed, name taken ({})", scan.conflicts.len())).show(ui, |ui| {
-            egui::ScrollArea::vertical().id_salt("conflicts").max_height(120.0).show(ui, |ui| {
-                for (p, why) in &scan.conflicts {
-                    ui.weak(format!("{}  —  {why}", p.display()));
-                }
-            });
+        egui::CollapsingHeader::new(format!(
+            "Not renamed, name taken ({})",
+            scan.conflicts.len()
+        ))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("conflicts")
+                .max_height(120.0)
+                .show(ui, |ui| {
+                    for (p, why) in &scan.conflicts {
+                        ui.weak(format!("{}  —  {why}", p.display()));
+                    }
+                });
         });
     }
     skipped_list(ui, &scan.skipped);
     if scan.items.is_empty() {
         ui.add_space(20.0);
-        ui.label(format!("No messy names found ({} checked).", plural(scan.files_checked as usize, "file")));
+        ui.label(format!(
+            "No messy names found ({} checked).",
+            plural(scan.files_checked as usize, "file")
+        ));
         return;
     }
     let row_h = row_height(ui);
@@ -451,14 +548,20 @@ pub fn rename_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
                     ui.checkbox(&mut checked[i], "");
                 });
                 row.col(|ui| {
-                    ui.label(item.old_name()).on_hover_text(item.file.path.display().to_string());
+                    ui.label(item.old_name())
+                        .on_hover_text(item.file.path.display().to_string());
                 });
                 row.col(|ui| {
                     ui.label(format!("→ {}", item.new_name()));
                 });
                 row.col(|ui| {
-                    ui.label(&folders[i])
-                        .on_hover_text(item.file.path.parent().map(|p| p.display().to_string()).unwrap_or_default());
+                    ui.label(&folders[i]).on_hover_text(
+                        item.file
+                            .path
+                            .parent()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default(),
+                    );
                 });
             });
         });
