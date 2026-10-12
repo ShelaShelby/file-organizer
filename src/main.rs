@@ -1,46 +1,156 @@
 //! File Organizer window. All file logic lives in `organizer-core`;
-//! this file only draws the window and starts background jobs.
+//! this code only draws the window and starts background jobs.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eframe::egui;
-use egui_extras::{Column, TableBuilder};
+use organizer_core::bigold::{find_big_old, BigOldOptions, BigOldScan};
+use organizer_core::dupes::{find_duplicates, remove_duplicates, DupOptions, DupScan, GroupChoice};
 use organizer_core::journal::BatchReport;
 use organizer_core::paths::app_data_dir;
-use organizer_core::{execute, scan, BatchSummary, Journal, Plan, Roots, ScanOptions, Settings};
+use organizer_core::remove::recycle_files;
+use organizer_core::{
+    execute, scan, BatchSummary, Journal, Plan, Progress, RecycleBin, Recycler, Roots, ScanOptions, ScannedFile,
+    Settings,
+};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
-use std::time::SystemTime;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
 mod icon;
+mod tabs;
+
+pub const RED: egui::Color32 = egui::Color32::from_rgb(240, 120, 110);
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("File Organizer")
-            .with_inner_size([1100.0, 700.0])
-            .with_min_inner_size([700.0, 400.0])
+            .with_inner_size([1150.0, 720.0])
+            .with_min_inner_size([760.0, 420.0])
             .with_icon(icon::icon()),
         ..Default::default()
     };
     eframe::run_native("File Organizer", options, Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))))
 }
 
-enum JobResult {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Sort,
+    Duplicates,
+    BigOld,
+}
+
+pub enum JobResult {
     Scanned(Result<Plan, String>),
+    Dupes(Result<DupScan, String>),
+    BigOld(Result<BigOldScan, String>),
     Done(Result<BatchReport, String>, &'static str),
 }
 
-struct App {
-    roots: Option<Roots>,
-    settings: Settings,
-    journal: Option<Journal>,
-    plan: Option<Plan>,
-    checked: Vec<bool>,
+pub struct Job {
+    rx: Receiver<JobResult>,
+    /// Set for scans that can be cancelled and show a file count.
+    pub progress: Option<Arc<Progress>>,
+    pub started: Instant,
+    pub label: &'static str,
+}
+
+/// Duplicate groups with the user's choices.
+pub struct DupView {
+    pub scan: DupScan,
+    pub include: Vec<bool>,
+    pub keep: Vec<Vec<bool>>,
+}
+
+impl DupView {
+    fn new(scan: DupScan) -> DupView {
+        let keep = scan.groups.iter().map(|g| g.default_keep()).collect();
+        let include = vec![true; scan.groups.len()];
+        DupView { scan, include, keep }
+    }
+
+    pub fn choices(&self) -> Vec<GroupChoice> {
+        self.scan
+            .groups
+            .iter()
+            .zip(&self.include)
+            .zip(&self.keep)
+            .filter(|((_, inc), _)| **inc)
+            .map(|((g, _), k)| GroupChoice { files: g.files.clone(), keep: k.clone() })
+            .collect()
+    }
+
+    /// Drops files that are gone now; groups left with one copy disappear.
+    fn forget(&mut self, gone: &[PathBuf]) {
+        let mut i = 0;
+        while i < self.scan.groups.len() {
+            let g = &mut self.scan.groups[i];
+            let k = &mut self.keep[i];
+            let mut j = 0;
+            while j < g.files.len() {
+                if gone.contains(&g.files[j].path) {
+                    g.files.remove(j);
+                    k.remove(j);
+                } else {
+                    j += 1;
+                }
+            }
+            if g.files.len() < 2 {
+                self.scan.groups.remove(i);
+                self.keep.remove(i);
+                self.include.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+}
+
+pub struct BigOldView {
+    pub scan: BigOldScan,
+    pub show_old: bool,
+}
+
+/// Files waiting for the user to press Confirm in the dialog.
+pub enum Pending {
+    Duplicates(Vec<GroupChoice>),
+    Files(Vec<ScannedFile>),
+}
+
+impl Pending {
+    fn files(&self) -> Vec<&ScannedFile> {
+        match self {
+            Pending::Duplicates(c) => c.iter().flat_map(|c| c.to_remove()).collect(),
+            Pending::Files(f) => f.iter().collect(),
+        }
+    }
+}
+
+pub struct App {
+    pub tab: Tab,
+    pub roots: Option<Roots>,
+    pub settings: Settings,
+    settings_path: Option<PathBuf>,
+    settings_open: bool,
+    settings_draft: Settings,
+    pub journal: Option<Journal>,
+    recycler: Arc<dyn Recycler>,
+    // Sort tab
+    pub plan: Option<Plan>,
+    pub checked: Vec<bool>,
+    // Duplicates tab
+    pub dupes: Option<DupView>,
+    // Big and old tab
+    pub bigold: Option<BigOldView>,
+    /// Which big/old list to show when the running scan finishes.
+    bigold_show_old_next: bool,
+    pub pending: Option<Pending>,
     history: Vec<BatchSummary>,
     last: Option<(String, BatchReport)>,
-    message: Option<String>,
-    job: Option<Receiver<JobResult>>,
+    pub message: Option<String>,
+    pub job: Option<Job>,
 }
 
 impl App {
@@ -54,24 +164,35 @@ impl App {
             s.spacing.button_padding = egui::vec2(12.0, 6.0);
         });
         let mut problems = Vec::new();
-        let roots = Roots::from_system().and_then(|r| r.validate().map(|_| r)).map_err(|e| problems.push(e.to_string())).ok();
-        let (settings, journal) = match app_data_dir() {
+        let roots =
+            Roots::from_system().and_then(|r| r.validate().map(|_| r)).map_err(|e| problems.push(e.to_string())).ok();
+        let (settings, journal, settings_path) = match app_data_dir() {
             Ok(dir) => {
-                let (s, warn) = Settings::load_or_create(&dir.join("settings.json"));
+                let path = dir.join("settings.json");
+                let (s, warn) = Settings::load_or_create(&path);
                 problems.extend(warn);
-                (s, Some(Journal::new(dir.join(organizer_core::journal::JOURNAL_FILE))))
+                (s, Some(Journal::new(dir.join(organizer_core::journal::JOURNAL_FILE))), Some(path))
             }
             Err(e) => {
                 problems.push(format!("cannot find the app-data folder: {e}"));
-                (Settings::default(), None)
+                (Settings::default(), None, None)
             }
         };
         let mut app = App {
+            tab: Tab::Sort,
             roots,
+            settings_draft: settings.clone(),
             settings,
+            settings_path,
+            settings_open: false,
             journal,
+            recycler: Arc::new(RecycleBin),
             plan: None,
             checked: Vec::new(),
+            dupes: None,
+            bigold: None,
+            bigold_show_old_next: false,
+            pending: None,
             history: Vec::new(),
             last: None,
             message: (!problems.is_empty()).then(|| problems.join("\n")),
@@ -90,26 +211,40 @@ impl App {
         }
     }
 
-    fn busy(&self) -> bool {
+    pub fn busy(&self) -> bool {
         self.job.is_some()
     }
 
-    fn start_scan(&mut self, ctx: &egui::Context) {
-        let Some(roots) = self.roots.clone() else { return };
-        let settings = self.settings.clone();
+    fn spawn(
+        &mut self,
+        ctx: &egui::Context,
+        label: &'static str,
+        progress: Option<Arc<Progress>>,
+        work: impl FnOnce() -> JobResult + Send + 'static,
+    ) {
         let (tx, rx) = channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let opts = ScanOptions::new(&settings, SystemTime::now());
-            let r = scan(&roots, &settings, &opts).map_err(|e| e.to_string());
-            let _ = tx.send(JobResult::Scanned(r));
+            let _ = tx.send(work());
             ctx.request_repaint();
         });
         self.last = None;
-        self.job = Some(rx);
+        self.message = None;
+        self.job = Some(Job { rx, progress, started: Instant::now(), label });
     }
 
-    fn start_confirm(&mut self, ctx: &egui::Context) {
+    pub fn start_scan(&mut self, ctx: &egui::Context) {
+        let Some(roots) = self.roots.clone() else {
+            return;
+        };
+        let settings = self.settings.clone();
+        self.spawn(ctx, "Scanning", None, move || {
+            let opts = ScanOptions::new(&settings, SystemTime::now());
+            JobResult::Scanned(scan(&roots, &settings, &opts).map_err(|e| e.to_string()))
+        });
+    }
+
+    pub fn start_confirm(&mut self, ctx: &egui::Context) {
         let (Some(roots), Some(plan), Some(journal)) = (self.roots.clone(), self.plan.take(), &self.journal) else {
             return;
         };
@@ -117,52 +252,108 @@ impl App {
         let moves: Vec<_> = plan.moves.into_iter().zip(checked).filter(|(_, c)| *c).map(|(m, _)| m).collect();
         let journal = Journal::new(journal.path());
         let settings = self.settings.clone();
-        self.spawn_batch(ctx, "Organised", move || {
+        self.spawn(ctx, "Moving", None, move || {
             let opts = ScanOptions::new(&settings, SystemTime::now());
-            Ok(execute(&roots, &moves, &journal, &opts))
+            JobResult::Done(Ok(execute(&roots, &moves, &journal, &opts)), "Organised")
         });
     }
 
-    fn start_undo(&mut self, ctx: &egui::Context, batch: Option<u64>) {
+    pub fn start_undo(&mut self, ctx: &egui::Context, batch: Option<u64>) {
         let Some(journal) = &self.journal else { return };
         let journal = Journal::new(journal.path());
         self.plan = None;
         self.checked.clear();
-        self.spawn_batch(ctx, "Undo", move || match batch {
-            Some(b) => journal.undo(b).map_err(|e| e.to_string()),
-            None => journal.undo_last().map_err(|e| e.to_string())?.ok_or_else(|| "Nothing to undo.".to_string()),
+        self.spawn(ctx, "Undoing", None, move || {
+            let r = match batch {
+                Some(b) => journal.undo(b).map_err(|e| e.to_string()),
+                None => journal
+                    .undo_last()
+                    .map_err(|e| e.to_string())
+                    .and_then(|r| r.ok_or_else(|| "Nothing to undo.".to_string())),
+            };
+            JobResult::Done(r, "Undo")
         });
     }
 
-    fn spawn_batch(
-        &mut self,
-        ctx: &egui::Context,
-        label: &'static str,
-        work: impl FnOnce() -> Result<BatchReport, String> + Send + 'static,
-    ) {
-        let (tx, rx) = channel();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(JobResult::Done(work(), label));
-            ctx.request_repaint();
+    pub fn start_dupes(&mut self, ctx: &egui::Context) {
+        let Some(roots) = self.roots.clone() else {
+            return;
+        };
+        let opts = DupOptions::new(&self.settings, SystemTime::now());
+        let progress = Arc::new(Progress::default());
+        let p = progress.clone();
+        self.dupes = None;
+        self.spawn(ctx, "Looking for duplicates", Some(progress), move || {
+            JobResult::Dupes(find_duplicates(&roots, &opts, &p).map_err(|e| e.to_string()))
         });
-        self.job = Some(rx);
+    }
+
+    pub fn start_bigold(&mut self, ctx: &egui::Context) {
+        let Some(roots) = self.roots.clone() else {
+            return;
+        };
+        let opts = BigOldOptions::new(&self.settings, SystemTime::now());
+        let progress = Arc::new(Progress::default());
+        let p = progress.clone();
+        let show_old = self.bigold.as_ref().is_some_and(|b| b.show_old);
+        self.bigold = None;
+        self.spawn(ctx, "Looking for big and old files", Some(progress), move || {
+            JobResult::BigOld(find_big_old(&roots, &opts, &p).map_err(|e| e.to_string()))
+        });
+        self.bigold_show_old_next = show_old;
+    }
+
+    fn start_removal(&mut self, ctx: &egui::Context) {
+        let (Some(roots), Some(journal), Some(pending)) = (self.roots.clone(), &self.journal, self.pending.take())
+        else {
+            return;
+        };
+        let journal = Journal::new(journal.path());
+        let recycler = self.recycler.clone();
+        self.spawn(ctx, "Sending to the Recycle Bin", None, move || {
+            let now = SystemTime::now();
+            let r = match pending {
+                Pending::Duplicates(c) => remove_duplicates(&roots, &c, &journal, recycler.as_ref(), now),
+                Pending::Files(f) => recycle_files(&roots, &f, &journal, recycler.as_ref(), now),
+            };
+            JobResult::Done(Ok(r), "Removed")
+        });
     }
 
     fn poll_job(&mut self) {
-        let Some(rx) = &self.job else { return };
-        let Ok(result) = rx.try_recv() else { return };
+        let Some(job) = &self.job else { return };
+        let Ok(result) = job.rx.try_recv() else {
+            return;
+        };
         self.job = None;
+        let cancelled = |e: &String| e == "cancelled";
         match result {
             JobResult::Scanned(Ok(plan)) => {
                 self.checked = vec![true; plan.moves.len()];
                 self.plan = Some(plan);
             }
+            JobResult::Dupes(Ok(scan)) => self.dupes = Some(DupView::new(scan)),
+            JobResult::BigOld(Ok(scan)) => {
+                self.bigold = Some(BigOldView { scan, show_old: self.bigold_show_old_next });
+            }
             JobResult::Done(Ok(report), label) => {
+                if let Some(d) = &mut self.dupes {
+                    d.forget(&report.recycled);
+                }
+                if let Some(b) = &mut self.bigold {
+                    b.scan.big.retain(|f| !report.recycled.contains(&f.path));
+                    b.scan.old.retain(|f| !report.recycled.contains(&f.path));
+                }
                 self.last = Some((label.to_string(), report));
                 self.refresh_history();
             }
-            JobResult::Scanned(Err(e)) | JobResult::Done(Err(e), _) => self.message = Some(e),
+            JobResult::Dupes(Err(e)) | JobResult::BigOld(Err(e)) if cancelled(&e) => {
+                self.message = Some("Scan cancelled.".into());
+            }
+            JobResult::Scanned(Err(e))
+            | JobResult::Dupes(Err(e))
+            | JobResult::BigOld(Err(e))
+            | JobResult::Done(Err(e), _) => self.message = Some(e),
         }
     }
 }
@@ -171,54 +362,90 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_job();
         let ctx = ui.ctx().clone();
+        if self.job.as_ref().is_some_and(|j| j.progress.is_some()) {
+            ctx.request_repaint_after(Duration::from_millis(150)); // live file count
+        }
 
         egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.heading("File Organizer");
-                ui.add_space(20.0);
-                let can = !self.busy() && self.roots.is_some();
-                if ui.add_enabled(can, egui::Button::new("🔍 Scan")).clicked() {
-                    self.start_scan(&ctx);
+                ui.add_space(24.0);
+                for (tab, name) in [(Tab::Sort, "Sort"), (Tab::Duplicates, "Duplicates"), (Tab::BigOld, "Big and old")]
+                {
+                    ui.selectable_value(&mut self.tab, tab, egui::RichText::new(name).size(17.0));
                 }
-                let n = self.checked.iter().filter(|c| **c).count();
-                let can_confirm = can && self.plan.is_some() && n > 0 && self.journal.is_some();
-                if ui.add_enabled(can_confirm, egui::Button::new(format!("✔ Confirm ({n})"))).clicked() {
-                    self.start_confirm(&ctx);
-                }
-                let can_undo = !self.busy() && self.history.iter().any(|b| !b.remaining.is_empty());
-                if ui.add_enabled(can_undo, egui::Button::new("Undo last")).clicked() {
-                    self.start_undo(&ctx, None);
-                }
-                if self.busy() {
-                    ui.spinner();
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.selectable_label(self.settings_open, "⚙ Settings").clicked() {
+                        self.settings_open = !self.settings_open;
+                        self.settings_draft = self.settings.clone();
+                    }
+                });
             });
-            ui.add_space(6.0);
+            ui.add_space(4.0);
         });
 
-        egui::Panel::bottom("bottom").show(ui, |ui| {
-            ui.add_space(4.0);
-            if let Some(msg) = &self.message {
-                ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::from_rgb(240, 120, 110), msg);
+        egui::Panel::bottom("bottom").show(ui, |ui| self.status_bar(ui));
+
+        egui::Panel::right("history").default_size(280.0).resizable(true).show(ui, |ui| self.history_panel(ui, &ctx));
+
+        egui::CentralPanel::default_margins().show(ui, |ui| match self.tab {
+            Tab::Sort => tabs::sort_tab(self, ui, &ctx),
+            Tab::Duplicates => tabs::dupes_tab(self, ui, &ctx),
+            Tab::BigOld => tabs::bigold_tab(self, ui, &ctx),
+        });
+
+        self.settings_window(&ctx);
+        self.confirm_dialog(&ctx);
+    }
+}
+
+impl App {
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        if let Some(job) = &self.job {
+            let mut cancel = false;
+            ui.horizontal(|ui| {
+                ui.spinner();
+                let secs = job.started.elapsed().as_secs();
+                match &job.progress {
+                    Some(p) => {
+                        let files = p.files.load(std::sync::atomic::Ordering::Relaxed);
+                        let hashed = p.hashed.load(std::sync::atomic::Ordering::Relaxed);
+                        let extra = if hashed > 0 { format!(" · {hashed} compared in full") } else { String::new() };
+                        ui.label(format!("{}…  {files} files checked{extra} · {secs} s", job.label));
+                        cancel = ui.button("Cancel").clicked();
+                    }
+                    None => {
+                        ui.label(format!("{}…  {secs} s", job.label));
+                    }
+                }
+            });
+            if cancel {
+                if let Some(p) = &job.progress {
+                    p.cancel();
+                }
+            }
+        } else if let Some(msg) = &self.message {
+            ui.colored_label(RED, msg);
+        }
+        if let Some((label, r)) = &self.last {
+            let text = if r.recycled.is_empty() && label != "Removed" { r.summary() } else { r.recycle_summary() };
+            ui.strong(format!("{label}: {text}"));
+            if !r.skipped.is_empty() || !r.errors.is_empty() {
+                egui::CollapsingHeader::new("Details").show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+                        for (p, why) in &r.skipped {
+                            ui.label(format!("Skipped  {}  —  {why}", p.display()));
+                        }
+                        for (p, why) in &r.errors {
+                            ui.colored_label(RED, format!("Error  {}  —  {why}", p.display()));
+                        }
+                    });
                 });
             }
-            if let Some((label, r)) = &self.last {
-                ui.strong(format!("{label}: {}", r.summary()));
-                if !r.skipped.is_empty() || !r.errors.is_empty() {
-                    egui::CollapsingHeader::new("Details").show(ui, |ui| {
-                        egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
-                            for (p, why) in &r.skipped {
-                                ui.label(format!("Skipped  {}  —  {why}", p.display()));
-                            }
-                            for (p, why) in &r.errors {
-                                ui.colored_label(egui::Color32::from_rgb(240, 120, 110), format!("Error  {}  —  {why}", p.display()));
-                            }
-                        });
-                    });
-                }
-            } else if let Some(roots) = &self.roots {
+        } else if self.job.is_none() && self.message.is_none() {
+            if let Some(roots) = &self.roots {
                 ui.weak(format!(
                     "Folders: {}   ·   {}   ·   {}",
                     roots.downloads.display(),
@@ -226,134 +453,174 @@ impl eframe::App for App {
                     roots.documents.display()
                 ));
             }
-            ui.add_space(4.0);
-        });
+        }
+        ui.add_space(4.0);
+    }
 
-        egui::Panel::right("history").default_size(270.0).resizable(true).show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.heading("History");
-            ui.separator();
-            let mut undo = None;
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                if self.history.is_empty() {
-                    ui.weak("Nothing moved yet.");
-                }
-                for b in &self.history {
-                    let time = b.time.get(..16).unwrap_or(&b.time).replace('T', " ");
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(time);
-                            let left = b.remaining.len();
-                            if left == 0 {
-                                ui.weak(format!("{} files · undone", b.total));
-                            } else {
-                                ui.weak(format!("{} files · {left} can be undone", b.total));
-                            }
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add_enabled(!self.busy() && !b.remaining.is_empty(), egui::Button::new("Undo")).clicked() {
-                                undo = Some(b.batch);
-                            }
-                        });
+    fn history_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.add_space(6.0);
+        ui.heading("History");
+        ui.separator();
+        let mut undo = None;
+        let busy = self.busy();
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            if self.history.is_empty() {
+                ui.weak("Nothing done yet.");
+            }
+            for b in &self.history {
+                let time = b.time.get(..16).unwrap_or(&b.time).replace('T', " ");
+                if !b.recycled.is_empty() {
+                    ui.label(time);
+                    ui.weak(format!("{} sent to the Recycle Bin", plural(b.recycled.len(), "file")));
+                    ui.weak("Restore them from the Recycle Bin (right-click → Restore).");
+                    egui::CollapsingHeader::new("Old places").id_salt(("rec", b.batch)).show(ui, |ui| {
+                        for e in &b.recycled {
+                            ui.add(egui::Label::new(egui::RichText::new(e.old.display().to_string()).small()).wrap());
+                        }
                     });
                     ui.separator();
+                    continue;
                 }
-            });
-            if let Some(b) = undo {
-                self.start_undo(&ctx, Some(b));
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(time);
+                        let left = b.remaining.len();
+                        if left == 0 {
+                            ui.weak(format!("{} moved · undone", plural(b.total, "file")));
+                        } else {
+                            ui.weak(format!("{} moved · {left} can be undone", plural(b.total, "file")));
+                        }
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add_enabled(!busy && !b.remaining.is_empty(), egui::Button::new("Undo")).clicked() {
+                            undo = Some(b.batch);
+                        }
+                    });
+                });
+                ui.separator();
             }
         });
+        if let Some(b) = undo {
+            self.start_undo(ctx, Some(b));
+        }
+    }
 
-        egui::CentralPanel::default_margins().show(ui, |ui| self.preview(ui));
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        use organizer_core::config::{BIG_FILE_MB_RANGE, MIN_DUPLICATE_KB_MAX, OLD_DAYS_RANGE, RECENT_DAYS_MAX};
+        if !self.settings_open {
+            return;
+        }
+        let mut open = true;
+        let mut save = false;
+        egui::Window::new("Settings")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 60.0))
+            .show(ctx, |ui| {
+                let d = &mut self.settings_draft;
+                egui::Grid::new("settings").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
+                    ui.label("Sort: leave Desktop / Documents files changed in the last");
+                    ui.add(egui::DragValue::new(&mut d.recent_days).range(0..=RECENT_DAYS_MAX).suffix(" days"));
+                    ui.end_row();
+                    ui.label("Big files: at least");
+                    ui.add(
+                        egui::DragValue::new(&mut d.big_file_mb)
+                            .range(BIG_FILE_MB_RANGE.0..=BIG_FILE_MB_RANGE.1)
+                            .suffix(" MB"),
+                    );
+                    ui.end_row();
+                    ui.label("Old files: not changed for");
+                    ui.add(
+                        egui::DragValue::new(&mut d.old_days)
+                            .range(OLD_DAYS_RANGE.0..=OLD_DAYS_RANGE.1)
+                            .suffix(" days"),
+                    );
+                    ui.end_row();
+                    ui.label("Duplicates: ignore files smaller than");
+                    ui.add(egui::DragValue::new(&mut d.min_duplicate_kb).range(0..=MIN_DUPLICATE_KB_MAX).suffix(" KB"));
+                    ui.end_row();
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    save = ui.button("Save").clicked();
+                    if ui.button("Defaults").clicked() {
+                        let cats = std::mem::take(&mut d.categories);
+                        *d = Settings { categories: cats, ..Settings::default() };
+                    }
+                });
+                ui.weak("Takes effect on the next scan.");
+            });
+        if save {
+            let draft = self.settings_draft.sanitized();
+            match &self.settings_path {
+                Some(path) => match draft.save(path) {
+                    Ok(()) => {
+                        self.settings = draft;
+                        self.settings_open = false;
+                        self.message = None;
+                    }
+                    Err(e) => self.message = Some(format!("Settings not saved: {e}")),
+                },
+                None => self.message = Some("Settings not saved: no app-data folder.".into()),
+            }
+        }
+        if !open {
+            self.settings_open = false;
+        }
+    }
+
+    fn confirm_dialog(&mut self, ctx: &egui::Context) {
+        let Some(pending) = &self.pending else { return };
+        let files = pending.files();
+        let total: u64 = files.iter().map(|f| f.size).sum();
+        let mut go = false;
+        let mut cancel = false;
+        let resp = egui::Modal::new(egui::Id::new("confirm-remove")).show(ctx, |ui| {
+            ui.set_max_width(720.0);
+            ui.heading(format!("Send {} to the Recycle Bin?", plural(files.len(), "file")));
+            ui.label(format!(
+                "These files will go ({}). You can restore them from the Recycle Bin.",
+                human_size(total)
+            ));
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical().max_height(320.0).auto_shrink([false, true]).show(ui, |ui| {
+                for f in &files {
+                    ui.label(format!("{}   ({})", f.path.display(), human_size(f.size)));
+                }
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                go = ui
+                    .button(egui::RichText::new(format!("🗑 Send {} to the Recycle Bin", files.len())).color(RED))
+                    .clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        if go && !self.busy() {
+            self.start_removal(ctx);
+        } else if cancel || resp.should_close() {
+            self.pending = None;
+        }
     }
 }
 
-impl App {
-    fn preview(&mut self, ui: &mut egui::Ui) {
-        let (Some(plan), Some(roots)) = (&self.plan, &self.roots) else {
-            ui.add_space(40.0);
-            ui.vertical_centered(|ui| {
-                ui.heading("Press Scan to see what would be tidied up.");
-                ui.weak("Nothing is moved until you press Confirm. Every move can be undone.");
-            });
-            return;
-        };
-        let total: u64 = plan.moves.iter().zip(&self.checked).filter(|(_, c)| **c).map(|(m, _)| m.size).sum();
-        ui.horizontal(|ui| {
-            ui.strong(format!("{} files to move ({})", plan.moves.len(), human_size(total)));
-            if ui.small_button("Select all").clicked() {
-                self.checked.iter_mut().for_each(|c| *c = true);
-            }
-            if ui.small_button("Select none").clicked() {
-                self.checked.iter_mut().for_each(|c| *c = false);
-            }
-        });
-        if !plan.skipped.is_empty() || !plan.errors.is_empty() {
-            egui::CollapsingHeader::new(format!("Left alone ({})", plan.skipped.len() + plan.errors.len())).show(ui, |ui| {
-                egui::ScrollArea::vertical().id_salt("skipped").max_height(120.0).show(ui, |ui| {
-                    for (p, r) in &plan.skipped {
-                        ui.weak(format!("{}  —  {r}", p.display()));
-                    }
-                    for (p, e) in &plan.errors {
-                        ui.colored_label(egui::Color32::from_rgb(240, 120, 110), format!("{}  —  {e}", p.display()));
-                    }
-                });
-            });
-        }
-        if plan.moves.is_empty() {
-            ui.add_space(20.0);
-            ui.label("All tidy — nothing to move.");
-            return;
-        }
-        ui.add_space(4.0);
-        let row_h = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
-        let checked = &mut self.checked;
-        TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::exact(28.0))
-            .column(Column::initial(240.0).at_least(80.0).clip(true))
-            .column(Column::initial(100.0).at_least(60.0))
-            .column(Column::remainder().at_least(120.0).clip(true))
-            .column(Column::exact(80.0))
-            .header(row_h, |mut h| {
-                for t in ["", "File", "From", "To", "Size"] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(row_h, plan.moves.len(), |mut row| {
-                    let i = row.index();
-                    let m = &plan.moves[i];
-                    row.col(|ui| {
-                        ui.checkbox(&mut checked[i], "");
-                    });
-                    row.col(|ui| {
-                        ui.label(m.source.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())
-                            .on_hover_text(m.source.display().to_string());
-                    });
-                    row.col(|ui| {
-                        ui.label(m.root.label());
-                    });
-                    row.col(|ui| {
-                        ui.label(short(&m.target, roots)).on_hover_text(m.target.display().to_string());
-                    });
-                    row.col(|ui| {
-                        ui.label(human_size(m.size));
-                    });
-                });
-            });
+pub fn plural(n: usize, word: &str) -> String {
+    if n == 1 {
+        format!("1 {word}")
+    } else {
+        format!("{n} {word}s")
     }
 }
 
 /// "C:\Users\me\Downloads\Images\2026-10" -> "Downloads\Images\2026-10".
-fn short(dir: &Path, roots: &Roots) -> String {
-    for base in [&roots.downloads, &roots.documents] {
+pub fn short(dir: &Path, roots: &Roots) -> String {
+    for base in [&roots.downloads, &roots.desktop, &roots.documents] {
         if let Some(name) = base.file_name() {
             if let Ok(rest) = dir.strip_prefix(base) {
+                if rest.as_os_str().is_empty() {
+                    return name.to_string_lossy().to_string();
+                }
                 return PathBuf::from(name).join(rest).display().to_string();
             }
         }
@@ -361,7 +628,7 @@ fn short(dir: &Path, roots: &Roots) -> String {
     dir.display().to_string()
 }
 
-fn human_size(b: u64) -> String {
+pub fn human_size(b: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = b as f64;
     let mut u = 0;
@@ -373,5 +640,22 @@ fn human_size(b: u64) -> String {
         format!("{b} B")
     } else {
         format!("{v:.1} {}", UNITS[u])
+    }
+}
+
+/// Opens Explorer with the file selected.
+pub fn show_in_folder(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("explorer.exe")
+            .raw_arg(format!("/select,\"{}\"", path.display()))
+            .spawn()
+            .map(|_| ())
+    }
+    #[cfg(not(windows))]
+    {
+        let dir = path.parent().unwrap_or(path);
+        std::process::Command::new("xdg-open").arg(dir).spawn().map(|_| ())
     }
 }

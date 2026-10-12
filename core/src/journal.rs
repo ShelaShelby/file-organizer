@@ -44,6 +44,9 @@ pub enum Record {
     Move(Entry),
     /// That move was reversed.
     Undo(Entry),
+    /// The file at `old` was sent to the Recycle Bin (`new` = its place in
+    /// the Recycle Bin if Windows reported it, else empty).
+    Recycle(Entry),
 }
 
 /// Result of one batch (organise or undo).
@@ -51,6 +54,8 @@ pub enum Record {
 pub struct BatchReport {
     pub batch: u64,
     pub moved: Vec<(PathBuf, PathBuf)>,
+    /// Files sent to the Recycle Bin.
+    pub recycled: Vec<PathBuf>,
     pub skipped: Vec<(PathBuf, String)>,
     pub errors: Vec<(PathBuf, String)>,
 }
@@ -58,6 +63,15 @@ pub struct BatchReport {
 impl BatchReport {
     pub fn summary(&self) -> String {
         format!("{} moved, {} skipped, {} errors", self.moved.len(), self.skipped.len(), self.errors.len())
+    }
+
+    pub fn recycle_summary(&self) -> String {
+        format!(
+            "{} sent to the Recycle Bin, {} skipped, {} errors",
+            self.recycled.len(),
+            self.skipped.len(),
+            self.errors.len()
+        )
     }
 }
 
@@ -69,6 +83,8 @@ pub struct BatchSummary {
     pub total: usize,
     /// Moves of this batch that have not been undone yet.
     pub remaining: Vec<Entry>,
+    /// Files this batch sent to the Recycle Bin (restore them from there).
+    pub recycled: Vec<Entry>,
 }
 
 pub struct Journal {
@@ -114,7 +130,7 @@ impl Journal {
             .unwrap_or_default()
             .iter()
             .map(|r| match r {
-                Record::Move(e) | Record::Undo(e) => e.batch,
+                Record::Move(e) | Record::Undo(e) | Record::Recycle(e) => e.batch,
             })
             .max()
             .unwrap_or(0);
@@ -133,17 +149,23 @@ impl Journal {
             .collect();
         let mut map: BTreeMap<u64, BatchSummary> = BTreeMap::new();
         for r in records {
-            if let Record::Move(e) = r {
-                let s = map.entry(e.batch).or_insert_with(|| BatchSummary {
-                    batch: e.batch,
-                    time: e.time.clone(),
-                    total: 0,
-                    remaining: Vec::new(),
-                });
-                s.total += 1;
-                if !undone.contains(&(e.batch, path_key(&e.new))) {
-                    s.remaining.push(e);
-                }
+            let (e, recycled) = match r {
+                Record::Move(e) => (e, false),
+                Record::Recycle(e) => (e, true),
+                Record::Undo(_) => continue,
+            };
+            let s = map.entry(e.batch).or_insert_with(|| BatchSummary {
+                batch: e.batch,
+                time: e.time.clone(),
+                total: 0,
+                remaining: Vec::new(),
+                recycled: Vec::new(),
+            });
+            s.total += 1;
+            if recycled {
+                s.recycled.push(e);
+            } else if !undone.contains(&(e.batch, path_key(&e.new))) {
+                s.remaining.push(e);
             }
         }
         Ok(map.into_values().rev().collect())
@@ -209,11 +231,15 @@ impl Journal {
 /// again if they are now EMPTY. `remove_dir` refuses non-empty folders, so
 /// no file can be lost.
 fn remove_empty_created_dirs(new_path: &Path) {
-    let Some(month) = new_path.parent() else { return };
+    let Some(month) = new_path.parent() else {
+        return;
+    };
     if !is_month_name(month) || fs::remove_dir(month).is_err() {
         return;
     }
-    let Some(type_dir) = month.parent() else { return };
+    let Some(type_dir) = month.parent() else {
+        return;
+    };
     if fs::remove_dir(type_dir).is_err() {
         return;
     }

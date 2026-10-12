@@ -51,16 +51,35 @@ pub enum Check {
     /// A folder (folders and everything inside them are never touched).
     Folder,
     Skip(SkipReason),
-    Ok { size: u64, modified: SystemTime },
+    Ok {
+        size: u64,
+        modified: SystemTime,
+    },
 }
 
 /// Full check of one top-level entry. `min_age`: files changed more
 /// recently than this are skipped.
 pub fn check_entry(path: &Path, min_age: Duration, now: SystemTime) -> Check {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(m) => m,
-        Err(e) => return Check::Skip(SkipReason::InUse(e.to_string())),
-    };
+    match check_entry_unlocked(path, min_age, now) {
+        Check::Ok { size, modified } => match open_exclusive(path) {
+            Ok(()) => Check::Ok { size, modified },
+            Err(e) => Check::Skip(SkipReason::InUse(e.to_string())),
+        },
+        other => other,
+    }
+}
+
+/// Same as [`check_entry`] but without trying to open the file (fast, used
+/// while walking big folder trees; the open check is done later).
+pub fn check_entry_unlocked(path: &Path, min_age: Duration, now: SystemTime) -> Check {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => check_meta(path, &meta, min_age, now),
+        Err(e) => Check::Skip(SkipReason::InUse(e.to_string())),
+    }
+}
+
+/// Checks an entry from metadata already read (no lock check).
+pub fn check_meta(path: &Path, meta: &Metadata, min_age: Duration, now: SystemTime) -> Check {
     if meta.file_type().is_symlink() {
         return Check::Skip(SkipReason::Link);
     }
@@ -74,7 +93,7 @@ pub fn check_entry(path: &Path, min_age: Duration, now: SystemTime) -> Check {
         Some(n) => n.to_string_lossy().to_string(),
         None => return Check::Skip(SkipReason::NotAFile),
     };
-    if let Some(r) = name_or_attr_reason(&name, &meta) {
+    if let Some(r) = name_or_attr_reason(&name, meta) {
         return Check::Skip(r);
     }
     let modified = match meta.modified() {
@@ -84,10 +103,26 @@ pub fn check_entry(path: &Path, min_age: Duration, now: SystemTime) -> Check {
     if is_recent(modified, min_age, now) {
         return Check::Skip(SkipReason::Recent);
     }
-    if let Err(e) = open_exclusive(path) {
-        return Check::Skip(SkipReason::InUse(e.to_string()));
-    }
     Check::Ok { size: meta.len(), modified }
+}
+
+/// Why a sub-folder must not be entered (links / junctions, hidden or
+/// system folders, protected places), or `None` if it may be scanned.
+pub fn folder_skip_reason(path: &Path, meta: &Metadata) -> Option<SkipReason> {
+    if meta.file_type().is_symlink() {
+        return Some(SkipReason::Link);
+    }
+    if !meta.is_dir() {
+        return Some(SkipReason::NotAFile);
+    }
+    if crate::paths::is_protected(path) {
+        return Some(SkipReason::System);
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    match attr_reason(&name, meta) {
+        Some(SkipReason::CloudOnly) | None => None, // online-only folders: files inside are checked one by one
+        r => r,
+    }
 }
 
 fn is_recent(modified: SystemTime, min_age: Duration, now: SystemTime) -> bool {
@@ -141,13 +176,18 @@ fn attr_reason(name: &str, _meta: &Metadata) -> Option<SkipReason> {
 
 /// Opens the file allowing NO sharing: fails if any other program has it
 /// open (still downloading, being edited, ...), or if it cannot be read.
-#[cfg(windows)]
 pub fn open_exclusive(path: &Path) -> std::io::Result<()> {
+    open_exclusive_file(path).map(|_| ())
+}
+
+/// Opens the file for reading allowing NO sharing (see [`open_exclusive`]).
+#[cfg(windows)]
+pub fn open_exclusive_file(path: &Path) -> std::io::Result<fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
-    fs::OpenOptions::new().read(true).share_mode(0).open(path).map(|_| ())
+    fs::OpenOptions::new().read(true).share_mode(0).open(path)
 }
 
 #[cfg(not(windows))]
-pub fn open_exclusive(path: &Path) -> std::io::Result<()> {
-    fs::File::open(path).map(|_| ())
+pub fn open_exclusive_file(path: &Path) -> std::io::Result<fs::File> {
+    fs::File::open(path)
 }

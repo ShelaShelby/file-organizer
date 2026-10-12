@@ -8,9 +8,12 @@ publish = false
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+blake3 = { version = "1.8.7", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_System_Com"] }
+windows = { version = "0.62.2", features = ["Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_Foundation"] }
+windows-core = "0.62.2"
 
 [dev-dependencies]
 tempfile = "3.27.0"
