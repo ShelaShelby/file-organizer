@@ -28,6 +28,9 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - name: Real Recycle Bin test (shows its output)
+        run: cargo test -p organizer-core --locked --test stage2 real_windows_recycle_bin -- --nocapture
+
       - name: Package
         shell: pwsh
         run: |
