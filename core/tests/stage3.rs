@@ -588,7 +588,7 @@ fn auto_skips_locked_file_windows() {
     }
     assert!(f.exists());
     drop(h);
-    assert!(env.tick(&mut sorter, false).is_none());
+    // Stable all along (cheap check), so it goes at the first check once it is closed.
     assert!(env.tick(&mut sorter, false).is_some());
     assert!(!f.exists());
 }
