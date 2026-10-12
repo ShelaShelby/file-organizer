@@ -1,0 +1,61 @@
+name: build
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/file-organizer.exe dist/
+          Copy-Item README.txt dist/
+          Compress-Archive -Path dist/* -DestinationPath file-organizer.zip -Force
+          "exe size: {0:N0} bytes" -f (Get-Item dist/file-organizer.exe).Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: file-organizer
+          path: file-organizer.zip
+
+      - name: Publish "latest" release (main only)
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "main moved on ($head); the newer run will publish."
+            exit 0
+          fi
+          gh release delete latest --cleanup-tag --yes || true
+          git push origin :refs/tags/latest || true
+          gh release create latest file-organizer.zip \
+            --target "$GITHUB_SHA" \
+            --title "File Organizer (latest)" \
+            --notes "Built from commit $GITHUB_SHA. Download file-organizer.zip, unzip, run file-organizer.exe."
