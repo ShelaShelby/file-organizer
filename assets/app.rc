@@ -1,0 +1,2 @@
+// App icon (Explorer, taskbar, tray). Resource id 1 is loaded by the tray.
+1 ICON "icon.ico"

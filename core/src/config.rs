@@ -29,6 +29,8 @@ pub struct Settings {
     pub old_days: u32,
     /// Duplicates: files smaller than this many KB are ignored.
     pub min_duplicate_kb: u64,
+    /// Background sorting of Downloads (`--tray`) is paused.
+    pub background_paused: bool,
 }
 
 /// Allowed ranges; values outside fall back to the default.
@@ -62,6 +64,7 @@ impl Default for Settings {
             big_file_mb: 500,
             old_days: 365,
             min_duplicate_kb: 1,
+            background_paused: false,
         }
     }
 }
@@ -139,6 +142,9 @@ impl Settings {
         if let Some(x) = field(&v, "min_duplicate_kb", |k: &u64| *k <= MIN_DUPLICATE_KB_MAX, &mut bad) {
             s.min_duplicate_kb = x;
         }
+        if let Some(x) = field(&v, "background_paused", |_: &bool| true, &mut bad) {
+            s.background_paused = x;
+        }
         let warn =
             (!bad.is_empty()).then(|| format!("settings.json: bad value for {}; using the default", bad.join(", ")));
         (s, warn)
@@ -148,6 +154,20 @@ impl Settings {
     pub fn sanitized(&self) -> Settings {
         let text = serde_json::to_string(self).unwrap_or_default();
         Settings::from_json(&text).0
+    }
+
+    /// Reads settings.json as it is on disk NOW, lets `change` edit it and
+    /// saves it. Used when two processes (window and background sorter) may
+    /// both write settings, so neither undoes the other's change.
+    pub fn update(path: &Path, change: impl FnOnce(&mut Settings)) -> io::Result<Settings> {
+        let mut s = match fs::read_to_string(path) {
+            Ok(text) => Settings::from_json(&text).0,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Settings::default(),
+            Err(e) => return Err(io::Error::other(format!("settings.json cannot be read ({e}); not overwriting it"))),
+        };
+        change(&mut s);
+        s.save(path)?;
+        Ok(s)
     }
 
     /// Writes settings.json. Refuses to replace a file that exists but

@@ -6,8 +6,12 @@
 //! Stage 2: duplicate finder (`dupes`), big / old file lists (`bigold`),
 //! both walking sub-folders (`tree`); removal only ever sends files to the
 //! Recycle Bin (`recycle`, `remove`) and is journaled.
-//! Stage 3 (renaming, background sorting) will plug in as new modules.
+//! Stage 3: junk-name cleanup (`rename`), background sorting of Downloads
+//! (`autosort`) and "Start with Windows" (`autostart`). All batches hold
+//! the journal lock so the window and the background sorter never clash.
 
+pub mod autosort;
+pub mod autostart;
 pub mod bigold;
 pub mod config;
 pub mod dupes;
@@ -17,12 +21,13 @@ pub mod paths;
 pub mod plan;
 pub mod recycle;
 pub mod remove;
+pub mod rename;
 pub mod safety;
 pub mod tree;
 
 pub use config::Settings;
 pub use journal::{BatchReport, BatchSummary, Journal};
 pub use paths::{RootKind, Roots};
-pub use plan::{execute, scan, Plan, PlannedMove, ScanOptions};
+pub use plan::{execute, execute_tagged, scan, Plan, PlannedMove, ScanOptions};
 pub use recycle::{RecycleBin, Recycler};
 pub use tree::{Progress, ScannedFile};

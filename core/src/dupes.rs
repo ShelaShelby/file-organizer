@@ -189,6 +189,14 @@ pub fn remove_duplicates(
     recycler: &dyn Recycler,
     now: SystemTime,
 ) -> BatchReport {
+    let _lock = match journal.lock() {
+        Ok(l) => l,
+        Err(e) => {
+            let mut report = BatchReport::default();
+            report.errors.push((journal.path().to_path_buf(), format!("journal is not available: {e}")));
+            return report;
+        }
+    };
     let mut report = BatchReport { batch: journal.next_batch_id(), ..Default::default() };
     if let Err(e) = roots.validate() {
         report.errors.push((PathBuf::new(), e.to_string()));

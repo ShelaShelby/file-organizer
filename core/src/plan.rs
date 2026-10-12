@@ -68,41 +68,54 @@ pub fn scan(roots: &Roots, settings: &Settings, opts: &ScanOptions) -> io::Resul
     let mut taken: HashSet<String> = HashSet::new();
     let mut seen_roots: HashSet<String> = HashSet::new();
     for kind in RootKind::ALL {
-        let root = roots.get(kind);
-        if !seen_roots.insert(path_key(root)) {
+        if !seen_roots.insert(path_key(roots.get(kind))) {
             continue; // two roots pointing at the same folder: scan once
         }
-        let entries = match fs::read_dir(root) {
-            Ok(rd) => rd,
-            Err(e) => {
-                plan.errors.push((root.to_path_buf(), e.to_string()));
-                continue;
-            }
-        };
-        let mut paths: Vec<PathBuf> = Vec::new();
-        for entry in entries {
-            match entry {
-                Ok(e) => paths.push(e.path()),
-                Err(e) => plan.errors.push((root.to_path_buf(), e.to_string())),
-            }
+        scan_root(roots, settings, opts, kind, &mut taken, &mut plan);
+    }
+    Ok(plan)
+}
+
+/// Plans the loose files at the top level of one root (also used by
+/// background sorting for Downloads).
+pub fn scan_root(
+    roots: &Roots,
+    settings: &Settings,
+    opts: &ScanOptions,
+    kind: RootKind,
+    taken: &mut HashSet<String>,
+    plan: &mut Plan,
+) {
+    let root = roots.get(kind);
+    let entries = match fs::read_dir(root) {
+        Ok(rd) => rd,
+        Err(e) => {
+            plan.errors.push((root.to_path_buf(), e.to_string()));
+            return;
         }
-        paths.sort_by_key(|p| path_key(p));
-        for path in paths {
-            match check_entry(&path, opts.min_age(kind), opts.now) {
-                Check::Folder => {}
-                Check::Skip(r) => plan.skipped.push((path, r)),
-                Check::Ok { size, modified } => {
-                    let name = file_name(&path);
-                    let category = settings.category_for(&name);
-                    let dir = target_dir(roots, kind, &category, modified);
-                    let target = free_target(&dir, &name, &taken);
-                    taken.insert(path_key(&target));
-                    plan.moves.push(PlannedMove { root: kind, source: path, target, category, size, modified });
-                }
+    };
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(e) => paths.push(e.path()),
+            Err(e) => plan.errors.push((root.to_path_buf(), e.to_string())),
+        }
+    }
+    paths.sort_by_key(|p| path_key(p));
+    for path in paths {
+        match check_entry(&path, opts.min_age(kind), opts.now) {
+            Check::Folder => {}
+            Check::Skip(r) => plan.skipped.push((path, r)),
+            Check::Ok { size, modified } => {
+                let name = file_name(&path);
+                let category = settings.category_for(&name);
+                let dir = target_dir(roots, kind, &category, modified);
+                let target = free_target(&dir, &name, taken);
+                taken.insert(path_key(&target));
+                plan.moves.push(PlannedMove { root: kind, source: path, target, category, size, modified });
             }
         }
     }
-    Ok(plan)
 }
 
 fn target_dir(roots: &Roots, kind: RootKind, category: &str, modified: SystemTime) -> PathBuf {
@@ -116,6 +129,26 @@ fn file_name(p: &Path) -> String {
 /// Carry out the moves the user confirmed. Each file is checked again just
 /// before it is moved; a problem with one file never stops the batch.
 pub fn execute(roots: &Roots, moves: &[PlannedMove], journal: &Journal, opts: &ScanOptions) -> BatchReport {
+    execute_tagged(roots, moves, journal, opts, "")
+}
+
+/// [`execute`], with every journal line tagged (e.g. "auto" for background
+/// sorting). Holds the journal lock for the whole batch.
+pub fn execute_tagged(
+    roots: &Roots,
+    moves: &[PlannedMove],
+    journal: &Journal,
+    opts: &ScanOptions,
+    tag: &str,
+) -> BatchReport {
+    let _lock = match journal.lock() {
+        Ok(l) => l,
+        Err(e) => {
+            let mut report = BatchReport::default();
+            report.errors.push((journal.path().to_path_buf(), format!("journal is not available: {e}")));
+            return report;
+        }
+    };
     let mut report = BatchReport { batch: journal.next_batch_id(), ..Default::default() };
     if let Err(e) = roots.validate() {
         report.errors.push((PathBuf::new(), e.to_string()));
@@ -158,7 +191,7 @@ pub fn execute(roots: &Roots, moves: &[PlannedMove], journal: &Journal, opts: &S
                 continue;
             }
         };
-        let entry = Entry::new(report.batch, &m.source, &new, m.size, m.modified);
+        let entry = Entry::new(report.batch, &m.source, &new, m.size, m.modified).tagged(tag);
         if let Err(e) = journal.append(&Record::Move(entry)) {
             // Without a journal line the move could not be undone: put it back.
             let msg = match crate::fsops::move_no_replace(&new, &m.source) {

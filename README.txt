@@ -2,7 +2,8 @@ File Organizer
 ==============
 
 Tidies the loose files in your Downloads, Desktop and Documents folders,
-finds duplicate files, and lists your biggest and oldest files.
+finds duplicate files, lists your biggest and oldest files, cleans up messy
+file names, and can sort finished downloads in the background.
 
 How to use
 1. Unzip and double-click file-organizer.exe (no install needed).
@@ -21,8 +22,27 @@ Tabs
 - Big and old: lists the 200 biggest files (default 500 MB or more) and the 200
   oldest files (not changed for 365 days). List only. Per file: "Open folder", or
   "Recycle" (asks first).
+- Rename: press "Find messy names". Only three things are fixed:
+  "photo (1) (2).jpg" -> "photo.jpg" (two or more counters; a single " (1)" stays),
+  "Copy of report.docx" / "report - Copy.docx" -> "report.docx", and extra spaces
+  ("my  file .txt" -> "my file.txt"). The extension never changes and the file
+  stays in its folder. If the new name is taken, the file is left alone.
+  Untick what you want to keep, press "Rename ticked". Undo works from History.
 - Settings (top right): days for the Sort rule, big-file size, old-file days,
-  smallest file size for duplicates.
+  smallest file size for duplicates, "Start with Windows".
+
+Background sorting (Downloads only)
+- Press "Start background sorting" (top right). A File Organizer icon appears in
+  the tray (bottom right, maybe under the ^ arrow); no window stays open.
+- Every 15 seconds it looks at the loose files in Downloads. A file is moved only
+  when its download is clearly finished: not changed for 2 minutes, same size at
+  two checks in a row, not in use, and not a .crdownload/.part/.partial/.tmp/
+  .download file. Same folders as Sort: Downloads\<Type>\<YYYY-MM>.
+- After a move a small note shows for 10 seconds with an "Undo" button.
+- Right-click the tray icon: Open Organizer, Pause (stays paused after a restart),
+  Undo last auto-sort, Start with Windows, Quit.
+- Start with Windows is off unless you turn it on (it only adds an entry for your
+  own user account; no admin rights needed). Turning it off removes the entry.
 
 Removed files
 - Files are only ever sent to the Recycle Bin, never deleted for good. If Windows
@@ -45,4 +65,5 @@ Safety
 
 Settings and history: %APPDATA%\file-organizer\
 - settings.json  (days, sizes, and which extensions go in which folder)
-- journal.jsonl  (every move and every file sent to the Recycle Bin)
+- journal.jsonl  (every move, rename and file sent to the Recycle Bin;
+  background moves are marked "auto")

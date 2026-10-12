@@ -7,8 +7,10 @@ use eframe::egui;
 use organizer_core::bigold::{find_big_old, BigOldOptions, BigOldScan};
 use organizer_core::dupes::{find_duplicates, remove_duplicates, DupOptions, DupScan, GroupChoice};
 use organizer_core::journal::BatchReport;
+use organizer_core::journal::{TAG_AUTO, TAG_RENAME};
 use organizer_core::paths::app_data_dir;
 use organizer_core::remove::recycle_files;
+use organizer_core::rename::{find_renames, rename_files, RenameScan};
 use organizer_core::{
     execute, scan, BatchSummary, Journal, Plan, Progress, RecycleBin, Recycler, Roots, ScanOptions, ScannedFile,
     Settings,
@@ -19,11 +21,27 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 mod icon;
+mod note;
 mod tabs;
+#[cfg(windows)]
+mod tray;
 
 pub const RED: egui::Color32 = egui::Color32::from_rgb(240, 120, 110);
 
 fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("--tray") => {
+            #[cfg(windows)]
+            tray::run();
+            return Ok(());
+        }
+        Some("--note") => {
+            let batch = args.get(1).and_then(|b| b.parse().ok()).unwrap_or(0);
+            return note::run(batch);
+        }
+        _ => {}
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("File Organizer")
@@ -40,12 +58,14 @@ pub enum Tab {
     Sort,
     Duplicates,
     BigOld,
+    Rename,
 }
 
 pub enum JobResult {
     Scanned(Result<Plan, String>),
     Dupes(Result<DupScan, String>),
     BigOld(Result<BigOldScan, String>),
+    Renames(Result<RenameScan, String>),
     Done(Result<BatchReport, String>, &'static str),
 }
 
@@ -146,8 +166,16 @@ pub struct App {
     pub bigold: Option<BigOldView>,
     /// Which big/old list to show when the running scan finishes.
     bigold_show_old_next: bool,
+    // Rename tab
+    pub renames: Option<RenameScan>,
+    pub rename_checked: Vec<bool>,
     pub pending: Option<Pending>,
     history: Vec<BatchSummary>,
+    /// Last-changed time of the journal when the history was read (the
+    /// background sorter writes it too).
+    history_stamp: Option<SystemTime>,
+    history_checked: Instant,
+    autostart_on: bool,
     last: Option<(String, BatchReport)>,
     pub message: Option<String>,
     pub job: Option<Job>,
@@ -192,8 +220,13 @@ impl App {
             dupes: None,
             bigold: None,
             bigold_show_old_next: false,
+            renames: None,
+            rename_checked: Vec::new(),
             pending: None,
             history: Vec::new(),
+            history_stamp: None,
+            history_checked: Instant::now(),
+            autostart_on: organizer_core::autostart::is_enabled(),
             last: None,
             message: (!problems.is_empty()).then(|| problems.join("\n")),
             job: None,
@@ -202,7 +235,24 @@ impl App {
         app
     }
 
+    fn journal_stamp(&self) -> Option<SystemTime> {
+        let j = self.journal.as_ref()?;
+        std::fs::metadata(j.path()).and_then(|m| m.modified()).ok()
+    }
+
+    /// Re-reads the history when the journal changed (e.g. background sorting).
+    fn refresh_history_if_changed(&mut self) {
+        if self.history_checked.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        self.history_checked = Instant::now();
+        if self.journal_stamp() != self.history_stamp {
+            self.refresh_history();
+        }
+    }
+
     fn refresh_history(&mut self) {
+        self.history_stamp = self.journal_stamp();
         if let Some(j) = &self.journal {
             match j.history() {
                 Ok(h) => self.history = h,
@@ -303,6 +353,47 @@ impl App {
         self.bigold_show_old_next = show_old;
     }
 
+    pub fn start_renames(&mut self, ctx: &egui::Context) {
+        let Some(roots) = self.roots.clone() else {
+            return;
+        };
+        let progress = Arc::new(Progress::default());
+        let p = progress.clone();
+        self.renames = None;
+        self.rename_checked.clear();
+        self.spawn(ctx, "Looking for messy names", Some(progress), move || {
+            JobResult::Renames(find_renames(&roots, SystemTime::now(), &p).map_err(|e| e.to_string()))
+        });
+    }
+
+    pub fn start_rename_confirm(&mut self, ctx: &egui::Context) {
+        let (Some(roots), Some(scan), Some(journal)) = (self.roots.clone(), self.renames.take(), &self.journal) else {
+            return;
+        };
+        let checked = std::mem::take(&mut self.rename_checked);
+        let items: Vec<_> = scan.items.into_iter().zip(checked).filter(|(_, c)| *c).map(|(i, _)| i).collect();
+        let journal = Journal::new(journal.path());
+        self.spawn(ctx, "Renaming", None, move || {
+            JobResult::Done(Ok(rename_files(&roots, &items, &journal, SystemTime::now())), "Renamed")
+        });
+    }
+
+    pub fn start_background(&mut self) {
+        let started = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg("--tray").spawn());
+        self.message = Some(match started {
+            Ok(_) => "Background sorting is on: look for the File Organizer icon in the tray.".into(),
+            Err(e) => format!("Could not start background sorting: {e}"),
+        });
+    }
+
+    fn set_autostart(&mut self, on: bool) {
+        let r = std::env::current_exe().and_then(|exe| organizer_core::autostart::set_enabled(on, &exe));
+        if let Err(e) = r {
+            self.message = Some(format!("Start with Windows could not be changed: {e}"));
+        }
+        self.autostart_on = organizer_core::autostart::is_enabled();
+    }
+
     fn start_removal(&mut self, ctx: &egui::Context) {
         let (Some(roots), Some(journal), Some(pending)) = (self.roots.clone(), &self.journal, self.pending.take())
         else {
@@ -333,6 +424,10 @@ impl App {
                 self.plan = Some(plan);
             }
             JobResult::Dupes(Ok(scan)) => self.dupes = Some(DupView::new(scan)),
+            JobResult::Renames(Ok(scan)) => {
+                self.rename_checked = vec![true; scan.items.len()];
+                self.renames = Some(scan);
+            }
             JobResult::BigOld(Ok(scan)) => {
                 self.bigold = Some(BigOldView { scan, show_old: self.bigold_show_old_next });
             }
@@ -347,12 +442,13 @@ impl App {
                 self.last = Some((label.to_string(), report));
                 self.refresh_history();
             }
-            JobResult::Dupes(Err(e)) | JobResult::BigOld(Err(e)) if cancelled(&e) => {
+            JobResult::Dupes(Err(e)) | JobResult::BigOld(Err(e)) | JobResult::Renames(Err(e)) if cancelled(&e) => {
                 self.message = Some("Scan cancelled.".into());
             }
             JobResult::Scanned(Err(e))
             | JobResult::Dupes(Err(e))
             | JobResult::BigOld(Err(e))
+            | JobResult::Renames(Err(e))
             | JobResult::Done(Err(e), _) => self.message = Some(e),
         }
     }
@@ -361,7 +457,9 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_job();
+        self.refresh_history_if_changed();
         let ctx = ui.ctx().clone();
+        ctx.request_repaint_after(Duration::from_secs(5)); // pick up background sorting in History
         if self.job.as_ref().is_some_and(|j| j.progress.is_some()) {
             ctx.request_repaint_after(Duration::from_millis(150)); // live file count
         }
@@ -371,14 +469,26 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.heading("File Organizer");
                 ui.add_space(24.0);
-                for (tab, name) in [(Tab::Sort, "Sort"), (Tab::Duplicates, "Duplicates"), (Tab::BigOld, "Big and old")]
-                {
+                for (tab, name) in [
+                    (Tab::Sort, "Sort"),
+                    (Tab::Duplicates, "Duplicates"),
+                    (Tab::BigOld, "Big and old"),
+                    (Tab::Rename, "Rename"),
+                ] {
                     ui.selectable_value(&mut self.tab, tab, egui::RichText::new(name).size(17.0));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.selectable_label(self.settings_open, "⚙ Settings").clicked() {
                         self.settings_open = !self.settings_open;
                         self.settings_draft = self.settings.clone();
+                        self.autostart_on = organizer_core::autostart::is_enabled();
+                    }
+                    if ui
+                        .button("Start background sorting")
+                        .on_hover_text("Sorts finished downloads in Downloads automatically (tray icon).")
+                        .clicked()
+                    {
+                        self.start_background();
                     }
                 });
             });
@@ -393,6 +503,7 @@ impl eframe::App for App {
             Tab::Sort => tabs::sort_tab(self, ui, &ctx),
             Tab::Duplicates => tabs::dupes_tab(self, ui, &ctx),
             Tab::BigOld => tabs::bigold_tab(self, ui, &ctx),
+            Tab::Rename => tabs::rename_tab(self, ui, &ctx),
         });
 
         self.settings_window(&ctx);
@@ -430,7 +541,13 @@ impl App {
             ui.colored_label(RED, msg);
         }
         if let Some((label, r)) = &self.last {
-            let text = if r.recycled.is_empty() && label != "Removed" { r.summary() } else { r.recycle_summary() };
+            let text = if label == "Renamed" {
+                r.summary().replacen("moved", "renamed", 1)
+            } else if r.recycled.is_empty() && label != "Removed" {
+                r.summary()
+            } else {
+                r.recycle_summary()
+            };
             ui.strong(format!("{label}: {text}"));
             if !r.skipped.is_empty() || !r.errors.is_empty() {
                 egui::CollapsingHeader::new("Details").show(ui, |ui| {
@@ -483,12 +600,17 @@ impl App {
                 }
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(time);
+                        let (what, who) = match b.tag.as_str() {
+                            TAG_RENAME => ("renamed", ""),
+                            TAG_AUTO => ("moved", " · background"),
+                            _ => ("moved", ""),
+                        };
+                        ui.label(format!("{time}{who}"));
                         let left = b.remaining.len();
                         if left == 0 {
-                            ui.weak(format!("{} moved · undone", plural(b.total, "file")));
+                            ui.weak(format!("{} {what} · undone", plural(b.total, "file")));
                         } else {
-                            ui.weak(format!("{} moved · {left} can be undone", plural(b.total, "file")));
+                            ui.weak(format!("{} {what} · {left} can be undone", plural(b.total, "file")));
                         }
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -512,6 +634,7 @@ impl App {
         }
         let mut open = true;
         let mut save = false;
+        let mut autostart_change = None;
         egui::Window::new("Settings")
             .open(&mut open)
             .collapsible(false)
@@ -542,6 +665,11 @@ impl App {
                     ui.end_row();
                 });
                 ui.add_space(6.0);
+                let mut autostart = self.autostart_on;
+                if ui.checkbox(&mut autostart, "Start with Windows (background sorting of Downloads)").changed() {
+                    autostart_change = Some(autostart);
+                }
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     save = ui.button("Save").clicked();
                     if ui.button("Defaults").clicked() {
@@ -551,12 +679,20 @@ impl App {
                 });
                 ui.weak("Takes effect on the next scan.");
             });
+        if let Some(on) = autostart_change {
+            self.set_autostart(on);
+        }
         if save {
             let draft = self.settings_draft.sanitized();
             match &self.settings_path {
-                Some(path) => match draft.save(path) {
-                    Ok(()) => {
-                        self.settings = draft;
+                // Keep the pause switch the tray may have changed meanwhile.
+                Some(path) => match Settings::update(path, |s| {
+                    let paused = s.background_paused;
+                    *s = draft.clone();
+                    s.background_paused = paused;
+                }) {
+                    Ok(saved) => {
+                        self.settings = saved;
                         self.settings_open = false;
                         self.message = None;
                     }

@@ -1,5 +1,6 @@
-//! Journal of every move (JSON lines in `%APPDATA%\file-organizer\journal.jsonl`)
-//! and undo.
+//! Journal of every move and rename (JSON lines in
+//! `%APPDATA%\file-organizer\journal.jsonl`) and undo. Every batch holds
+//! [`Journal::lock`] (a lock file next to the journal) while it runs.
 
 use crate::fsops::{move_no_replace, path_key};
 use crate::paths::FROM_DESKTOP;
@@ -12,6 +13,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const JOURNAL_FILE: &str = "journal.jsonl";
+/// Tag of moves made by background sorting (`--tray`).
+pub const TAG_AUTO: &str = "auto";
+/// Tag of renames made in the Rename tab.
+pub const TAG_RENAME: &str = "rename";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
@@ -22,6 +27,10 @@ pub struct Entry {
     pub size: u64,
     /// Last-changed time of the file, in nanoseconds since 1970.
     pub modified_ns: i64,
+    /// Who made the change: empty = Sort tab, [`TAG_AUTO`] = background
+    /// sorting, [`TAG_RENAME`] = Rename tab.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tag: String,
 }
 
 impl Entry {
@@ -33,7 +42,13 @@ impl Entry {
             new: new.to_path_buf(),
             size,
             modified_ns: to_ns(modified),
+            tag: String::new(),
         }
+    }
+
+    pub fn tagged(mut self, tag: &str) -> Entry {
+        self.tag = tag.to_string();
+        self
     }
 }
 
@@ -80,6 +95,8 @@ impl BatchReport {
 pub struct BatchSummary {
     pub batch: u64,
     pub time: String,
+    /// Tag of the batch's entries ("", "auto" or "rename").
+    pub tag: String,
     pub total: usize,
     /// Moves of this batch that have not been undone yet.
     pub remaining: Vec<Entry>,
@@ -91,6 +108,14 @@ pub struct Journal {
     path: PathBuf,
 }
 
+/// Held while a batch checks, moves and journals files. The main window and
+/// the background sorter are separate processes; the lock makes sure they
+/// never work at the same time, so a file cannot be moved twice and journal
+/// lines never mix. Released when dropped (or when the process ends).
+pub struct JournalLock {
+    _file: fs::File,
+}
+
 impl Journal {
     pub fn new(path: impl Into<PathBuf>) -> Journal {
         Journal { path: path.into() }
@@ -98,6 +123,36 @@ impl Journal {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    fn lock_path(&self) -> PathBuf {
+        self.path.with_extension("lock")
+    }
+
+    fn open_lock_file(&self) -> io::Result<fs::File> {
+        if let Some(dir) = self.path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        OpenOptions::new().create(true).truncate(false).read(true).write(true).open(self.lock_path())
+    }
+
+    /// Waits until no other batch (in any process) is running, then holds
+    /// the lock until the returned guard is dropped.
+    pub fn lock(&self) -> io::Result<JournalLock> {
+        let file = self.open_lock_file()?;
+        file.lock()?;
+        Ok(JournalLock { _file: file })
+    }
+
+    /// Like [`Journal::lock`] but returns `None` at once if another batch
+    /// is running.
+    pub fn try_lock(&self) -> io::Result<Option<JournalLock>> {
+        let file = self.open_lock_file()?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(JournalLock { _file: file })),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(e)) => Err(e),
+        }
     }
 
     /// Writes one line and flushes it to disk.
@@ -157,6 +212,7 @@ impl Journal {
             let s = map.entry(e.batch).or_insert_with(|| BatchSummary {
                 batch: e.batch,
                 time: e.time.clone(),
+                tag: e.tag.clone(),
                 total: 0,
                 remaining: Vec::new(),
                 recycled: Vec::new(),
@@ -173,16 +229,27 @@ impl Journal {
 
     /// Undo the newest batch that still has moves left to undo.
     pub fn undo_last(&self) -> io::Result<Option<BatchReport>> {
-        let last = self.history()?.into_iter().find(|b| !b.remaining.is_empty());
+        self.undo_last_where(|_| true)
+    }
+
+    /// Undo the newest batch with this tag that still has moves left.
+    pub fn undo_last_tagged(&self, tag: &str) -> io::Result<Option<BatchReport>> {
+        self.undo_last_where(|b| b.tag == tag)
+    }
+
+    fn undo_last_where(&self, pick: impl Fn(&BatchSummary) -> bool) -> io::Result<Option<BatchReport>> {
+        let last = self.history()?.into_iter().find(|b| !b.remaining.is_empty() && pick(b));
         match last {
             Some(b) => self.undo(b.batch).map(Some),
             None => Ok(None),
         }
     }
 
-    /// Move every file of `batch` back to where it was. A file is skipped
-    /// (and reported) if it is gone, was changed, or its old spot is taken.
+    /// Move every file of `batch` back to where it was (renames get their
+    /// old name back). A file is skipped (and reported) if it is gone, was
+    /// changed or renamed again, or its old spot / old name is taken.
     pub fn undo(&self, batch: u64) -> io::Result<BatchReport> {
+        let _lock = self.lock()?;
         let summary = self.history()?.into_iter().find(|b| b.batch == batch);
         let mut report = BatchReport { batch, ..Default::default() };
         let Some(summary) = summary else {
@@ -220,7 +287,9 @@ impl Journal {
             if let Err(err) = self.append(&Record::Undo(rec)) {
                 report.errors.push((e.old.clone(), format!("moved back, but journal could not be written: {err}")));
             }
-            remove_empty_created_dirs(&e.new);
+            if e.tag != TAG_RENAME {
+                remove_empty_created_dirs(&e.new);
+            }
             report.moved.push((e.new.clone(), e.old.clone()));
         }
         Ok(report)

@@ -1,39 +1,44 @@
-# Report – Stage 2
+# Report – Stage 3
 
 ## Built
-- `core/` (no GUI), new modules: `tree` (walk Downloads/Desktop/Documents WITH sub-folders, stage-1 skip
-  rules; links/junctions, hidden/system and protected folders are never entered), `dupes` (size → BLAKE3 of
-  first 16 KB → full BLAKE3; min size setting, empty files always ignored), `bigold` (top 200 biggest /
-  oldest by last-changed), `recycle` (Recycle Bin), `remove` (re-check + journal).
-- Recycle Bin: Windows `IFileOperation` with `FOFX_RECYCLEONDELETE`; a progress sink cancels any item in
-  `PreDeleteItem` that Windows would delete for good (no `TSF_DELETE_RECYCLE_IF_POSSIBLE`), so such files
-  are left and reported. Nothing in the app can delete permanently. `Recycler` trait lets tests swap it.
-- Before each removal the file is checked again: inside a root, no junction/link/hidden folder on the way,
-  skip rules, not locked, same size and last-changed time as at the scan. Otherwise skipped.
-- Duplicates: a group is skipped if it has no kept copy, or a kept copy is gone/changed (at least one copy
-  always stays). Confirm is disabled while any ticked group keeps no copy.
-- Journal: `recycle` records (old path, place in the Recycle Bin). History shows removals with old paths
-  and "restore them from the Recycle Bin".
-- Settings: big-file MB (500), old days (365), min duplicate KB (1), plus the 7-day rule. Per-value fallback
-  to defaults; an unreadable settings.json is never overwritten (Save refuses).
-- GUI: tabs Sort / Duplicates / Big and old, Settings panel (top right). Scans run on a background thread
-  with file count, seconds and Cancel. Duplicates: per-file "Keep", per-group tick, space freed, Confirm
-  dialog listing every file that will go. Big and old: Open folder (Explorer /select), Recycle (asks first).
-- New dependencies: `blake3`, `windows` + `windows-core` (Windows only, for IFileOperation).
+- `core/rename` (no GUI): walks the 3 roots with sub-folders (stage 2 walker and skip rules) and proposes
+  renames only for: 2+ stacked counters (`photo (1) (2).jpg` → `photo.jpg`), `Copy of ` prefix / ` - Copy`
+  suffix (any case), repeated / surrounding spaces. Extension never changes, same folder only, valid Windows
+  name (no reserved/forbidden/empty names), no numbers invented. Skipped if the target exists (ignoring
+  case) or two proposals share a target. Right before each rename: inside a root, unchanged size and
+  last-changed time, not locked, target still free; then the stage 1 no-replace move. Journaled (`rename`).
+- GUI tab "Rename": preview (old → new, folder), all ticked, "Rename ticked". Undo via History / Undo last:
+  only if the file still has the new name, unchanged, and the old name is free.
+- `core/autosort` + `--tray`: separate process, no window and no egui; raw Win32 tray icon, hidden window,
+  15 s `SetTimer`, sleeps in `GetMessageW` (no new crates). Single instance via named mutex. Top-level
+  Downloads only, reusing the stage 1 scan/execute (same rules, `Type\YYYY-MM`, journal, tag `auto`).
+  Eligible = stage 1 checks (2 min, temp names, exclusive open) + changed > 60 s ago + same size and time at
+  two checks + not `.crdownload/.part/.partial/.tmp/.download`.
+- After a batch the tray starts `file-organizer.exe --note <batch>`: small always-on-top popup at the
+  bottom right, "Moved N files to Downloads\<Type>\<YYYY-MM>", Undo button, closes after ~10 s.
+- Tray menu: Open Organizer, Pause (checked; saved as `background_paused` in settings.json), Undo last
+  auto-sort, Start with Windows (checkbox), Quit. Main app: "Start background sorting" button, Settings
+  checkbox "Start with Windows" (HKCU `...\Run`, value `FileOrganizer` = `"<exe>" --tray`, default off,
+  unticking removes it). Settings saves from the window keep the tray's pause switch.
+- Two processes: every batch (sort, auto-sort, rename, recycle, undo) holds an exclusive lock on
+  `journal.lock` (std `File::lock`) while it re-checks, moves and journals. The second waits and then
+  finds the file gone, so nothing is moved twice and journal lines never interleave.
+- Icon: `tools/make_icon.py` (pure Python) draws a folder with a green check badge → `assets/icon.ico`
+  (16–64 px bitmaps + 256 px PNG, 38 KB). Embedded with `build.rs` + `embed-resource` (build-only
+  dependency); used for exe, window (read from the .ico) and tray. Main window History marks
+  "renamed" and "background" batches and refreshes when the tray writes the journal.
 
 ## Tests
-- 64 tests on Windows in Actions, all passing: 35 stage 1 (`rules.rs`) + 29 stage 2 (`stage2.rs`):
-  content-not-name, same size/different content (also differing only after the first block), empty/tiny,
-  sub-folders, oldest kept by default, change kept copy / untick group, zero-copy groups refused,
-  changed-after-scan skipped (size and time), kept copy changed → group left, recycler failure leaves file,
-  hidden/system files+folders, junctions, symlinks, locked, temp/shortcut/desktop.ini, outside-root and
-  `..` refused, cancel, big/old thresholds + settings + cap, settings fallback / no overwrite.
-- Real Recycle Bin test passes in Actions: file lands in `D:\$RECYCLE.BIN\…` with its content intact.
-- Exe size: 5,888,512 bytes (~5.6 MB; stage 1 was ~5.5 MB).
+- 97 tests on Windows in Actions: 35 stage 1 + 30 stage 2 + 31 stage 3 + 1 icon. Stage 3: each rename
+  pattern, single counter left, extension kept, invalid/reserved/empty names, target exists (case-
+  insensitive), same-target proposals, file created/changed/gone/locked after scan, tampered proposals,
+  hidden/temp/shortcut/recent skipped, Undo + Undo refused; auto-sort: two checks needed, too new, size
+  changing, temp extensions, locked, paused (and saved), top level only, undo last auto-sort only; journal
+  lock exclusive, parallel batches move each file once; Run value written, read and removed in HKCU.
+- Exe size: about 6 MB (exact number printed by the CI "Package" step).
 
 ## Known gaps
-- No Undo for removals: restoring needs undocumented Recycle Bin internals; use Recycle Bin → Restore
-  (History shows the old paths).
-- Duplicates are checked by size + last-changed time at confirm, not re-hashed.
-- Online-only OneDrive files are skipped (not downloaded to hash them).
-- GUI itself is not covered by automated tests (only the library is).
+- The tray icon, its menu and the `--note` popup were never seen on a real desktop: CI has no
+  interactive session, so they are compile-checked only. Popup position assumes system DPI.
+- "Open Organizer" opens a new window even if one is already open. Tray Undo shows its result as a note.
+- Rename Undo checks size + last-changed time, not file content.

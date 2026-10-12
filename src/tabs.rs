@@ -1,4 +1,4 @@
-//! The three tabs: Sort, Duplicates, Big and old.
+//! The tabs: Sort, Duplicates, Big and old, Rename.
 
 use crate::{human_size, plural, short, show_in_folder, App, Pending, RED};
 use eframe::egui;
@@ -376,4 +376,90 @@ pub fn bigold_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     if open_err.is_some() {
         app.message = open_err;
     }
+}
+
+// ---------------------------------------------------------------- Rename
+
+pub fn rename_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
+    let can = !app.busy() && app.roots.is_some();
+    let n = app.rename_checked.iter().filter(|c| **c).count();
+    ui.horizontal(|ui| {
+        if ui.add_enabled(can, egui::Button::new("🔍 Find messy names")).clicked() {
+            app.start_renames(ctx);
+        }
+        let can_confirm = can && app.renames.is_some() && n > 0 && app.journal.is_some();
+        if ui.add_enabled(can_confirm, egui::Button::new(format!("✔ Rename ticked ({n})"))).clicked() {
+            app.start_rename_confirm(ctx);
+        }
+    });
+    ui.separator();
+    let Some(scan) = &app.renames else {
+        intro(
+            ui,
+            "Tidy up junk in file names.",
+            "Only \"photo (1) (2)\" counters, \"Copy of\" / \" - Copy\" and extra spaces. The extension never changes. Nothing is renamed until you press Rename, and every rename can be undone.",
+        );
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.strong(format!("{} to rename", plural(scan.items.len(), "file")));
+        if ui.small_button("Select all").clicked() {
+            app.rename_checked.iter_mut().for_each(|c| *c = true);
+        }
+        if ui.small_button("Select none").clicked() {
+            app.rename_checked.iter_mut().for_each(|c| *c = false);
+        }
+    });
+    if !scan.conflicts.is_empty() {
+        egui::CollapsingHeader::new(format!("Not renamed, name taken ({})", scan.conflicts.len())).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("conflicts").max_height(120.0).show(ui, |ui| {
+                for (p, why) in &scan.conflicts {
+                    ui.weak(format!("{}  —  {why}", p.display()));
+                }
+            });
+        });
+    }
+    skipped_list(ui, &scan.skipped);
+    if scan.items.is_empty() {
+        ui.add_space(20.0);
+        ui.label(format!("No messy names found ({} checked).", plural(scan.files_checked as usize, "file")));
+        return;
+    }
+    let row_h = row_height(ui);
+    let folders: Vec<String> = scan.items.iter().map(|i| folder(app, &i.file)).collect();
+    let checked = &mut app.rename_checked;
+    TableBuilder::new(ui)
+        .striped(true)
+        .resizable(true)
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .column(Column::exact(28.0))
+        .column(Column::initial(260.0).at_least(100.0).clip(true))
+        .column(Column::initial(260.0).at_least(100.0).clip(true))
+        .column(Column::remainder().at_least(120.0).clip(true))
+        .header(row_h, |mut h| {
+            for t in ["", "Old name", "New name", "Folder"] {
+                h.col(|ui| {
+                    ui.strong(t);
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(row_h, scan.items.len(), |mut row| {
+                let i = row.index();
+                let item = &scan.items[i];
+                row.col(|ui| {
+                    ui.checkbox(&mut checked[i], "");
+                });
+                row.col(|ui| {
+                    ui.label(item.old_name()).on_hover_text(item.file.path.display().to_string());
+                });
+                row.col(|ui| {
+                    ui.label(format!("→ {}", item.new_name()));
+                });
+                row.col(|ui| {
+                    ui.label(&folders[i])
+                        .on_hover_text(item.file.path.parent().map(|p| p.display().to_string()).unwrap_or_default());
+                });
+            });
+        });
 }

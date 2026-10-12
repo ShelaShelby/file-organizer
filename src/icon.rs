@@ -1,42 +1,57 @@
-//! Window icon, drawn in code (a folder with a tick) so no image files or
-//! decoding crates are needed.
+//! The app icon (`assets/icon.ico`, drawn by `tools/make_icon.py`). The
+//! same file is embedded in the exe by `build.rs` (Explorer, taskbar, tray);
+//! here the 64 px bitmap inside it is read for the window icon, so no image
+//! decoding crate is needed.
 
 use eframe::egui::IconData;
 
+const ICO: &[u8] = include_bytes!("../assets/icon.ico");
+
 pub fn icon() -> IconData {
-    const S: u32 = 64;
-    let mut rgba = vec![0u8; (S * S * 4) as usize];
-    let folder = [244u8, 180, 60, 255];
-    let tab = [214u8, 150, 40, 255];
-    let tick = [255u8, 255, 255, 255];
-    for y in 0..S {
-        for x in 0..S {
-            let (fx, fy) = (x as f32, y as f32);
-            let mut c = None;
-            if (6.0..=28.0).contains(&fx) && (10.0..=18.0).contains(&fy) {
-                c = Some(tab);
-            }
-            if (4.0..=60.0).contains(&fx) && (16.0..=56.0).contains(&fy) {
-                c = Some(folder);
-            }
-            // tick: two thick line segments
-            let d1 = seg_dist(fx, fy, 18.0, 36.0, 28.0, 46.0);
-            let d2 = seg_dist(fx, fy, 28.0, 46.0, 47.0, 26.0);
-            if c.is_some() && d1.min(d2) < 3.5 {
-                c = Some(tick);
-            }
-            if let Some(px) = c {
-                let i = ((y * S + x) * 4) as usize;
-                rgba[i..i + 4].copy_from_slice(&px);
-            }
-        }
-    }
-    IconData { rgba, width: S, height: S }
+    from_ico(ICO, 64).unwrap_or_default()
 }
 
-fn seg_dist(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
-    let (dx, dy) = (bx - ax, by - ay);
-    let t = (((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
-    let (cx, cy) = (ax + t * dx, ay + t * dy);
-    ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
+fn u16_at(d: &[u8], i: usize) -> Option<usize> {
+    Some(u16::from_le_bytes(d.get(i..i + 2)?.try_into().ok()?) as usize)
+}
+
+fn u32_at(d: &[u8], i: usize) -> Option<usize> {
+    Some(u32::from_le_bytes(d.get(i..i + 4)?.try_into().ok()?) as usize)
+}
+
+/// Reads the `size` x `size` 32-bit bitmap entry of an .ico file.
+fn from_ico(d: &[u8], size: usize) -> Option<IconData> {
+    let count = u16_at(d, 4)?;
+    for i in 0..count {
+        let e = 6 + 16 * i;
+        if *d.get(e)? as usize != size {
+            continue;
+        }
+        let off = u32_at(d, e + 12)?;
+        let bmp = d.get(off..)?;
+        if u32_at(bmp, 0)? != 40 || u16_at(bmp, 14)? != 32 {
+            continue; // not a plain 32-bit bitmap (e.g. PNG)
+        }
+        let pixels = bmp.get(40..40 + size * size * 4)?;
+        let mut rgba = vec![0u8; size * size * 4];
+        for y in 0..size {
+            let src = &pixels[(size - 1 - y) * size * 4..][..size * 4]; // rows are stored bottom-up
+            for x in 0..size {
+                let (b, g, r, a) = (src[x * 4], src[x * 4 + 1], src[x * 4 + 2], src[x * 4 + 3]);
+                rgba[(y * size + x) * 4..][..4].copy_from_slice(&[r, g, b, a]);
+            }
+        }
+        return Some(IconData { rgba, width: size as u32, height: size as u32 });
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn icon_file_has_a_64px_bitmap() {
+        let i = super::from_ico(super::ICO, 64).expect("64 px entry");
+        assert_eq!((i.width, i.height, i.rgba.len()), (64, 64, 64 * 64 * 4));
+        assert!(i.rgba.chunks(4).any(|p| p[3] == 255));
+    }
 }
