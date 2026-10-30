@@ -63,7 +63,7 @@ fn file(dir: &Path, name: &str, content: &str, age: Duration) -> PathBuf {
 
 fn set_age(p: &Path, age: Duration) {
     let f = fs::OpenOptions::new().write(true).open(p).unwrap();
-    f.set_modified(SystemTime::now() - age).unwrap();
+    f.set_times(ft(SystemTime::now() - age)).unwrap();
 }
 
 fn days(n: u64) -> Duration {
@@ -152,7 +152,7 @@ fn month_folder_uses_last_changed_date() {
     let env = Env::new();
     let p = file(&env.roots.downloads, "old.zip", "z", days(1));
     let t: SystemTime = Local.with_ymd_and_hms(2024, 3, 15, 12, 0, 0).unwrap().into();
-    fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(t).unwrap();
+    fs::OpenOptions::new().write(true).open(&p).unwrap().set_times(ft(t)).unwrap();
     let plan = env.scan();
     assert_eq!(plan.moves[0].target, env.roots.downloads.join("Archives").join("2024-03").join("old.zip"));
 }
@@ -195,7 +195,7 @@ fn age_rule_downloads_two_minutes() {
 fn future_dates_are_treated_as_recent() {
     let env = Env::new();
     let p = file(&env.roots.downloads, "future.txt", "x", days(0));
-    fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(SystemTime::now() + days(5)).unwrap();
+    fs::OpenOptions::new().write(true).open(&p).unwrap().set_times(ft(SystemTime::now() + days(5))).unwrap();
     assert!(env.scan().moves.is_empty());
 }
 
@@ -700,4 +700,101 @@ fn check_entry_reports_folder() {
     let env = Env::new();
     let c = organizer_core::safety::check_entry(&env.roots.downloads, Duration::ZERO, SystemTime::now());
     assert_eq!(c, Check::Folder);
+}
+
+/// Last-changed AND created time `t`. On Windows a file counts as new by the
+/// newer of the two (a copied file keeps its old last-changed time).
+fn ft(t: SystemTime) -> fs::FileTimes {
+    let times = fs::FileTimes::new().set_modified(t);
+    #[cfg(windows)]
+    let times = {
+        use std::os::windows::fs::FileTimesExt;
+        times.set_created(t)
+    };
+    times
+}
+
+// ---------------------------------------------------------------- folders on undo
+
+#[test]
+fn undo_never_removes_a_folder_that_was_there_before() {
+    let env = Env::new();
+    // The user's own (empty) folders that happen to have type-folder names.
+    let music = env.roots.documents.join("Music");
+    let images = env.roots.downloads.join("Images");
+    fs::create_dir_all(&music).unwrap();
+    fs::create_dir_all(&images).unwrap();
+    let a = file(&env.roots.documents, "song.mp3", "S", days(40));
+    let b = file(&env.roots.downloads, "pic.jpg", "P", days(40));
+    assert_eq!(env.run_all().moved.len(), 2);
+    let undo = env.journal.undo_last(&env.roots).unwrap().unwrap();
+    assert_eq!(undo.moved.len(), 2, "{undo:?}");
+    assert!(a.is_file() && b.is_file());
+    // The month folders the app made are gone, the user's folders stay.
+    assert!(music.is_dir() && images.is_dir());
+    assert_eq!(fs::read_dir(&music).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(&images).unwrap().count(), 0);
+}
+
+#[test]
+fn undo_keeps_a_made_folder_that_is_not_empty() {
+    let env = Env::new();
+    let a = file(&env.roots.downloads, "pic.jpg", "P", days(40));
+    let report = env.run_all();
+    let month = report.moved[0].1.parent().unwrap().to_path_buf();
+    let mine = file(&month, "mine.txt", "user file", days(0));
+    env.journal.undo_last(&env.roots).unwrap().unwrap();
+    assert!(a.is_file());
+    assert_eq!(fs::read_to_string(&mine).unwrap(), "user file");
+}
+
+#[test]
+fn undo_of_old_journal_lines_removes_only_the_month_folder() {
+    let env = Env::new();
+    file(&env.roots.documents, "song.mp3", "S", days(40));
+    let report = env.run_all();
+    let month = report.moved[0].1.parent().unwrap().to_path_buf();
+    // A journal written before created folders were recorded.
+    let text = fs::read_to_string(env.journal.path()).unwrap();
+    let start = text.find(",\"made_dirs\":[").expect("made_dirs recorded");
+    let end = start + text[start..].find(']').unwrap() + 1;
+    fs::write(env.journal.path(), format!("{}{}", &text[..start], &text[end..])).unwrap();
+    assert!(env.journal.records().unwrap().iter().all(|r| match r {
+        organizer_core::journal::Record::Move(e) => e.made_dirs.is_none(),
+        _ => true,
+    }));
+    env.journal.undo_last(&env.roots).unwrap().unwrap();
+    assert!(!month.exists());
+    // The type folder may have been the user's own: left alone.
+    assert!(env.roots.documents.join("Music").is_dir());
+}
+
+#[test]
+fn tampered_made_dirs_outside_the_file_path_are_ignored() {
+    let env = Env::new();
+    file(&env.roots.downloads, "pic.jpg", "P", days(40));
+    env.run_all();
+    let empty_user_dir = env.roots.desktop.join("Empty");
+    fs::create_dir_all(&empty_user_dir).unwrap();
+    let text = fs::read_to_string(env.journal.path()).unwrap();
+    let start = text.find("\"made_dirs\":[").unwrap() + "\"made_dirs\":[".len();
+    let shown = serde_json::to_string(&empty_user_dir).unwrap();
+    fs::write(env.journal.path(), format!("{}{},{}", &text[..start], shown, &text[start..])).unwrap();
+    env.journal.undo_last(&env.roots).unwrap().unwrap();
+    assert!(empty_user_dir.is_dir());
+}
+
+#[cfg(windows)]
+#[test]
+fn copied_file_with_an_old_date_counts_as_new() {
+    let env = Env::new();
+    // Copied / unzipped today, last-changed time from long ago.
+    for dir in [&env.roots.downloads, &env.roots.desktop] {
+        let p = dir.join("copied.pdf");
+        fs::write(&p, "x").unwrap();
+        fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(SystemTime::now() - days(300)).unwrap();
+    }
+    let plan = env.scan();
+    assert!(plan.moves.is_empty(), "{:?}", plan.moves);
+    assert_eq!(plan.skipped.iter().filter(|(_, r)| *r == SkipReason::Recent).count(), 2);
 }

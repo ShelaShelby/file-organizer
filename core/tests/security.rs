@@ -75,7 +75,7 @@ fn file(dir: &Path, name: &str, content: &[u8], age: Duration) -> PathBuf {
 }
 
 fn set_time(p: &Path, t: SystemTime) {
-    fs::OpenOptions::new().write(true).open(p).unwrap().set_modified(t).unwrap();
+    fs::OpenOptions::new().write(true).open(p).unwrap().set_times(ft(t)).unwrap();
 }
 
 fn mtime(p: &Path) -> SystemTime {
@@ -674,4 +674,16 @@ fn security_md_is_short_and_names_the_limits() {
     for w in ["same Windows user", "SmartScreen", "OpenGL", "Recycle Bin"] {
         assert!(s.contains(w), "{w}");
     }
+}
+
+/// Last-changed AND created time `t`. On Windows a file counts as new by the
+/// newer of the two (a copied file keeps its old last-changed time).
+fn ft(t: SystemTime) -> fs::FileTimes {
+    let times = fs::FileTimes::new().set_modified(t);
+    #[cfg(windows)]
+    let times = {
+        use std::os::windows::fs::FileTimesExt;
+        times.set_created(t)
+    };
+    times
 }

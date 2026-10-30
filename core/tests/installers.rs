@@ -65,7 +65,7 @@ fn file(dir: &Path, name: &str, age: Duration) -> PathBuf {
     fs::create_dir_all(dir).unwrap();
     let p = dir.join(name);
     fs::write(&p, b"MZ installer").unwrap();
-    fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(SystemTime::now() - age).unwrap();
+    fs::OpenOptions::new().write(true).open(&p).unwrap().set_times(ft(SystemTime::now() - age)).unwrap();
     p
 }
 
@@ -225,4 +225,16 @@ fn the_running_app_is_never_an_old_installer() {
     o.extensions.push(exe.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default());
     let scan = find_installers(&roots, &o, &Progress::default()).unwrap();
     assert!(scan.files.iter().all(|f| f.path != exe));
+}
+
+/// Last-changed AND created time `t`. On Windows a file counts as new by the
+/// newer of the two (a copied file keeps its old last-changed time).
+fn ft(t: SystemTime) -> fs::FileTimes {
+    let times = fs::FileTimes::new().set_modified(t);
+    #[cfg(windows)]
+    let times = {
+        use std::os::windows::fs::FileTimesExt;
+        times.set_created(t)
+    };
+    times
 }

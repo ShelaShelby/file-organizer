@@ -2,7 +2,7 @@
 //! (with sub-folders). Grouped by size, then a hash of the first block,
 //! then a full BLAKE3 hash. Removal keeps at least one copy of every group.
 
-use crate::fsops::path_key;
+use crate::fsops::{file_id, path_key};
 use crate::journal::{BatchReport, Journal};
 use crate::paths::Roots;
 use crate::recycle::Recycler;
@@ -104,7 +104,11 @@ pub fn find_duplicates(roots: &Roots, opts: &DupOptions, progress: &Progress) ->
             } else {
                 vec![quick] // the quick hash already covered the whole file
             };
-            for mut files in groups {
+            for files in groups {
+                let mut files = distinct_files(files, &mut scan.skipped);
+                if files.len() < 2 {
+                    continue;
+                }
                 files.sort_by(|a, b| {
                     a.modified.cmp(&b.modified).then_with(|| path_key(&a.path).cmp(&path_key(&b.path)))
                 });
@@ -118,6 +122,23 @@ pub fn find_duplicates(roots: &Roots, opts: &DupOptions, progress: &Progress) ->
         wb.cmp(&wa)
     });
     Ok(scan)
+}
+
+/// Keeps one path per real file: a second path to the same file (hard link,
+/// or one folder reached by two paths) is NOT a copy, so it is listed as
+/// skipped and never offered for removal. A file whose identity cannot be
+/// read is skipped too (when in doubt, leave it alone).
+fn distinct_files(files: Vec<ScannedFile>, skipped: &mut Skipped) -> Vec<ScannedFile> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for f in files {
+        match file_id(&f.path) {
+            Ok(id) if seen.insert(id) => out.push(f),
+            Ok(_) => skipped.push(f.path, crate::safety::SkipReason::SameFile),
+            Err(e) => skipped.push(f.path, crate::safety::SkipReason::InUse(e.to_string())),
+        }
+    }
+    out
 }
 
 /// Splits files into groups (of 2 or more) with equal key. Files that cannot
@@ -269,6 +290,15 @@ pub fn remove_duplicates(
             }
             continue;
         }
+        // The real files behind the kept paths, read right now. A path that
+        // leads to one of them is the same file, not a copy: never removed.
+        let kept_ids: Option<HashSet<(u64, u128)>> = kept.iter().map(|f| file_id(&f.path).ok()).collect();
+        let Some(kept_ids) = kept_ids else {
+            for f in c.to_remove() {
+                report.skipped.push((f.path.clone(), "the copy to keep cannot be checked now".into()));
+            }
+            continue;
+        };
         // Compare contents again right now (full hash, no sharing), once for
         // the kept copy and once for each copy that goes.
         let progress = Progress::default();
@@ -282,6 +312,20 @@ pub fn remove_duplicates(
             }
         };
         for f in c.to_remove() {
+            match file_id(&f.path) {
+                Ok(id) if kept_ids.contains(&id) => {
+                    report.skipped.push((
+                        f.path.clone(),
+                        "this is the same file as the copy to keep (a second path to it), so it was left alone".into(),
+                    ));
+                    continue;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    report.skipped.push((f.path.clone(), format!("cannot be checked now ({e})")));
+                    continue;
+                }
+            }
             match hash_file(&f.path, None, &progress) {
                 Ok(h) if h == kept_hash => {
                     recycle_checked(roots, f, journal, recycler, now, &mut report);

@@ -67,12 +67,21 @@ Removed files
   cannot put a file in the Recycle Bin, it is left alone and reported.
 - History lists each removal with the old places of the files. To get a file back,
   open the Recycle Bin, right-click it and choose "Restore".
+- The Recycle Bin keeps files until it is emptied: by you, by Storage Sense, or by
+  Windows when the bin is full (it then drops its oldest files). Restore what you
+  want back before that.
+- Duplicates: a second path to the same file (a hard link) is not a copy and is
+  never offered for removal. At least one copy of every group always stays.
 
 Where files go
 - Downloads\photo.jpg   -> Downloads\Images\2026-10\photo.jpg
 - Documents\notes.txt   -> Documents\Documents\2026-10\notes.txt
 - Desktop\report.pdf    -> Documents\From Desktop\Documents\2026-10\report.pdf
   (the month is when the file was last changed)
+- A file that was just copied, unzipped or restored counts as new, even if its
+  last-changed date is old, so it is not moved the moment it arrives.
+- Undo puts files back and removes only the folders File Organizer made for them,
+  and only if they are empty. Folders that were there before are never removed.
 
 Safety
 - Nothing is ever deleted for good and no file is ever overwritten
