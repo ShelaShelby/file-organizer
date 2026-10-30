@@ -82,15 +82,31 @@ const DEFAULT_CATEGORIES: &[(&str, &[&str])] = &[
     ("Installers", &["exe", "msi", "msix"]),
 ];
 
+/// File types added after the first release. They are in the defaults for
+/// new settings, AND used for older settings.json files that do not list
+/// them yet (only if that type folder is still in the user's list, and never
+/// over an extension the user already put somewhere).
+const ADDED_CATEGORIES: &[(&str, &[&str])] = &[
+    ("Images", &["avif", "jfif", "heif", "tif", "ico", "raw", "dng", "cr2", "cr3", "nef", "arw", "orf", "rw2", "psd"]),
+    ("Videos", &["m4v", "mpg", "mpeg", "3gp", "flv", "m2ts"]),
+    ("Music", &["opus", "wma", "aif", "aiff", "mid", "midi"]),
+    ("Documents", &["epub", "mobi", "djvu", "ods", "odp", "xlsm", "docm", "pptm", "xps", "oxps"]),
+    ("Archives", &["bz2", "xz", "tgz", "zst", "iso"]),
+    ("Installers", &["appx", "appxbundle", "msixbundle"]),
+];
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
             recent_days: 7,
             categories: DEFAULT_CATEGORIES
                 .iter()
-                .map(|(name, exts)| Category {
-                    name: name.to_string(),
-                    extensions: exts.iter().map(|e| e.to_string()).collect(),
+                .map(|(name, exts)| {
+                    let added = ADDED_CATEGORIES.iter().filter(|(n, _)| n == name).flat_map(|(_, e)| e.iter());
+                    Category {
+                        name: name.to_string(),
+                        extensions: exts.iter().chain(added).map(|e| e.to_string()).collect(),
+                    }
                 })
                 .collect(),
             big_file_mb: 500,
@@ -114,6 +130,15 @@ impl Settings {
         for c in &self.categories {
             if c.extensions.iter().any(|e| normalize_ext(e) == ext) {
                 return safe_folder_name(&c.name);
+            }
+        }
+        // Newer built-in types for an older settings.json: only into a type
+        // folder the user still has (so a deleted folder never comes back).
+        for (name, exts) in ADDED_CATEGORIES {
+            if exts.contains(&ext.as_str()) {
+                if let Some(c) = self.categories.iter().find(|c| c.name.trim().eq_ignore_ascii_case(name)) {
+                    return safe_folder_name(&c.name);
+                }
             }
         }
         OTHER.to_string()

@@ -142,7 +142,7 @@ pub struct DupView {
 impl DupView {
     fn new(scan: DupScan) -> DupView {
         let keep = scan.groups.iter().map(|g| g.default_keep()).collect();
-        let include = vec![true; scan.groups.len()];
+        let include = scan.groups.iter().map(|g| g.default_include()).collect();
         DupView { scan, include, keep, sort: None }
     }
 

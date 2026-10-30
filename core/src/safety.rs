@@ -5,8 +5,15 @@ use std::fs::{self, Metadata};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-/// Endings of files that are still downloading or are temporary.
-pub const TEMP_EXTENSIONS: &[&str] = &["crdownload", "part", "partial", "tmp", "download", "opdownload"];
+/// Endings of files that are still downloading or are temporary (browsers,
+/// and download / torrent programs: qBittorrent, uTorrent, BitTorrent,
+/// BitComet, Thunder, aria2's control file).
+pub const TEMP_EXTENSIONS: &[&str] =
+    &["crdownload", "part", "partial", "tmp", "download", "opdownload", "!qb", "!ut", "!bt", "bc!", "xltd", "aria2"];
+/// A download program keeps a control file next to an unfinished download
+/// ("film.mkv" + "film.mkv.aria2"). While it is there the download is not
+/// done (it may be paused, so the file is not locked): never touch it.
+pub const PARTIAL_SIDECARS: &[&str] = &["aria2"];
 /// Name prefixes of Office / LibreOffice lock and temp files.
 pub const TEMP_PREFIXES: &[&str] = &["~$", ".~lock."];
 /// Shortcuts are never moved.
@@ -104,6 +111,9 @@ pub fn check_meta(path: &Path, meta: &Metadata, min_age: Duration, now: SystemTi
     }
     if let Some(r) = name_or_attr_reason(&name, meta) {
         return Check::Skip(r);
+    }
+    if has_partial_sidecar(path) {
+        return Check::Skip(SkipReason::Temporary);
     }
     let modified = match meta.modified() {
         Ok(m) => m,
@@ -207,6 +217,23 @@ pub fn program_folder_on_disk(dir: &Path) -> Option<SkipReason> {
         Err(e) => return Some(SkipReason::InUse(e.to_string())),
     };
     program_folder_reason(&names)
+}
+
+/// True if a download program's control file sits next to `path` (see
+/// [`PARTIAL_SIDECARS`]); also true if that cannot be checked.
+pub fn has_partial_sidecar(path: &Path) -> bool {
+    let Some(name) = path.file_name() else {
+        return false;
+    };
+    PARTIAL_SIDECARS.iter().any(|ext| {
+        let mut side = name.to_os_string();
+        side.push(".");
+        side.push(ext);
+        match fs::symlink_metadata(path.with_file_name(side)) {
+            Ok(_) => true,
+            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+        }
+    })
 }
 
 fn is_recent(modified: SystemTime, min_age: Duration, now: SystemTime) -> bool {

@@ -38,10 +38,36 @@ pub struct DupGroup {
     pub files: Vec<ScannedFile>,
 }
 
+/// Programs and scripts. A copy of one may be the very file a shortcut or
+/// the user starts it from, so duplicates of these are never pre-marked to go.
+pub const PROGRAM_EXTENSIONS: &[&str] =
+    &["exe", "msi", "msix", "msixbundle", "appx", "appxbundle", "dll", "com", "scr", "bat", "cmd", "ps1", "vbs", "jar"];
+
 impl DupGroup {
-    /// Default choice: keep only the copy with the oldest last-changed date.
+    /// True if the files are programs or scripts (see [`PROGRAM_EXTENSIONS`]).
+    pub fn is_programs(&self) -> bool {
+        self.files.iter().any(|f| {
+            let ext = f.path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            PROGRAM_EXTENSIONS.contains(&ext.as_str())
+        })
+    }
+
+    /// Default choice. Programs: keep every copy (the user must pick what
+    /// goes). Otherwise keep one copy: the oldest one that is NOT in
+    /// Downloads (Desktop, Documents and extra folders are where people put
+    /// files on purpose), or the oldest one if all are in Downloads.
     pub fn default_keep(&self) -> Vec<bool> {
-        (0..self.files.len()).map(|i| i == 0).collect()
+        if self.is_programs() {
+            return vec![true; self.files.len()];
+        }
+        let keep = self.files.iter().position(|f| f.root != crate::paths::RootKind::Downloads).unwrap_or(0);
+        (0..self.files.len()).map(|i| i == keep).collect()
+    }
+
+    /// Groups start unticked: nothing goes to the Recycle Bin unless the
+    /// user ticks the group.
+    pub fn default_include(&self) -> bool {
+        false
     }
 }
 

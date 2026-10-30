@@ -15,8 +15,10 @@ How to use
 Tabs
 - Sort: the steps above.
 - Duplicates: press "Find duplicates" (all sub-folders are included; Cancel stops it).
-  Each group holds files with exactly the same content. The copy with the oldest
-  date is kept; tick "Keep" on another copy to change that, or untick a whole group.
+  Each group holds files with exactly the same content. Nothing is ticked at
+  first: tick a group (or "Select all") to clean it up. The oldest copy outside
+  Downloads is kept; tick "Keep" on another copy to change that. For programs
+  (.exe, .msi, ...) every copy is kept until you untick "Keep" yourself.
   "Confirm" shows the exact list of files that will go; they go to the Recycle Bin.
   Every group always keeps at least one copy.
 - Big and old: lists the 200 biggest files (default 500 MB or more) and the 200

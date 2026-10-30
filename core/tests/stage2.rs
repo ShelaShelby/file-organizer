@@ -205,6 +205,54 @@ fn default_keep_is_oldest_copy() {
 }
 
 #[test]
+fn default_keeps_copy_outside_downloads() {
+    let env = Env::new();
+    file(&env.roots.downloads, "old-download.jpg", &data(5, 2048), days(300));
+    let desk = file(&env.roots.desktop, "on-desktop.jpg", &data(5, 2048), days(3));
+    let scan = env.dupes();
+    let g = &scan.groups[0];
+    let keep = g.default_keep();
+    let kept: Vec<_> = g.files.iter().zip(&keep).filter(|(_, k)| **k).map(|(f, _)| f.path.clone()).collect();
+    assert_eq!(kept, vec![desk], "the Desktop copy stays even though the Downloads one is older");
+}
+
+#[test]
+fn default_keeps_oldest_when_all_in_downloads() {
+    let env = Env::new();
+    file(&env.roots.downloads, "new.jpg", &data(5, 2048), days(3));
+    file(&env.roots.downloads, "old.jpg", &data(5, 2048), days(300));
+    let scan = env.dupes();
+    let g = &scan.groups[0];
+    assert_eq!(names(&g.files), vec!["old.jpg", "new.jpg"]);
+    assert_eq!(g.default_keep(), vec![true, false]);
+}
+
+#[test]
+fn duplicate_programs_are_never_pre_marked() {
+    let env = Env::new();
+    let app = file(&env.roots.desktop, "MyApp.exe", &data(8, 4096), days(3));
+    let dl = file(&env.roots.downloads, "MyApp.exe", &data(8, 4096), days(300));
+    let scan = env.dupes();
+    let g = &scan.groups[0];
+    assert!(g.is_programs());
+    assert_eq!(g.default_keep(), vec![true, true]);
+    // Confirming the default choice removes nothing.
+    let c = choice(g);
+    assert_eq!(c.to_remove().count(), 0);
+    assert!(env.remove(&[c]).recycled.is_empty());
+    assert!(app.is_file() && dl.is_file());
+}
+
+#[test]
+fn duplicate_groups_start_unticked() {
+    let env = Env::new();
+    file(&env.roots.downloads, "a.jpg", &data(5, 2048), days(3));
+    file(&env.roots.documents, "b.jpg", &data(5, 2048), days(30));
+    let scan = env.dupes();
+    assert!(scan.groups.iter().all(|g| !g.default_include()));
+}
+
+#[test]
 fn skip_rules_apply_to_duplicates() {
     let env = Env::new();
     let d = data(6, 2048);

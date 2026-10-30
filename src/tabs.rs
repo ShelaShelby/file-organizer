@@ -235,6 +235,12 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
             plural(view.scan.groups.len(), "group"),
             human_size(space_freed(&choices))
         ));
+        if ui.small_button("Select all").clicked() {
+            view.include.iter_mut().for_each(|i| *i = true);
+        }
+        if ui.small_button("Select none").clicked() {
+            view.include.iter_mut().for_each(|i| *i = false);
+        }
         if let Some(p) = &problem {
             ui.colored_label(RED, p);
         }
@@ -246,7 +252,7 @@ pub fn dupes_tab(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         return;
     }
     ui.weak(
-        "The copy with the oldest date is kept. Tick \"Keep\" to choose another; untick a group to leave it alone.",
+        "Nothing is ticked: tick a group to clean it up. A copy outside Downloads is kept (programs: every copy, untick \"Keep\" yourself).",
     );
 
     // One table row per group header and per file.

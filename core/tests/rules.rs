@@ -230,6 +230,31 @@ fn skips_temp_downloading_shortcut_and_desktop_ini() {
 }
 
 #[test]
+fn skips_paused_torrent_and_download_manager_files() {
+    let env = Env::new();
+    // Unfinished torrent pieces and download-program control files.
+    let partial = ["show.mkv.!qB", "album.zip.!ut", "game.iso.!bt", "a.rar.bc!", "b.exe.xltd", "film.mkv.aria2"];
+    for n in partial {
+        file(&env.roots.downloads, n, "x", days(30));
+    }
+    // A paused aria2 download: the file itself looks finished, only its
+    // control file next to it says it is not.
+    file(&env.roots.downloads, "film.mkv", "x", days(30));
+    // A finished download with no control file is still sorted.
+    file(&env.roots.downloads, "done.mkv", "x", days(30));
+    let plan = env.scan();
+    for n in partial.iter().chain(&["film.mkv"]) {
+        assert_eq!(skip_reason(&plan, n), Some(SkipReason::Temporary), "{n}");
+    }
+    let report = env.run_all();
+    assert_eq!(report.moved.len(), 1, "{report:?}");
+    assert!(report.moved[0].0.ends_with("done.mkv"));
+    for n in partial.iter().chain(&["film.mkv"]) {
+        assert!(env.roots.downloads.join(n).is_file(), "{n} must stay");
+    }
+}
+
+#[test]
 fn folders_and_their_contents_are_never_touched() {
     let env = Env::new();
     let sub = env.roots.documents.join("My Project");
@@ -608,13 +633,47 @@ fn settings_created_with_defaults_and_editable() {
 
     let mut edited = s.clone();
     edited.recent_days = 14;
-    edited
-        .categories
-        .push(organizer_core::config::Category { name: "Ebooks".into(), extensions: vec![".EPUB".into()] });
+    edited.categories.push(organizer_core::config::Category { name: "Comics".into(), extensions: vec![".CBZ".into()] });
     edited.save(&path).unwrap();
     let (s2, _) = Settings::load_or_create(&path);
     assert_eq!(s2.recent_days, 14);
-    assert_eq!(s2.category_for("book.epub"), "Ebooks");
+    assert_eq!(s2.category_for("issue1.cbz"), "Comics");
+}
+
+#[test]
+fn newer_file_types_are_recognized() {
+    let s = Settings::default();
+    for (name, folder) in [
+        ("photo.avif", "Images"),
+        ("photo.JFIF", "Images"),
+        ("IMG_0001.CR2", "Images"),
+        ("clip.m4v", "Videos"),
+        ("voice.opus", "Music"),
+        ("book.epub", "Documents"),
+        ("sheet.ods", "Documents"),
+        ("backup.tar.xz", "Archives"),
+        ("windows.iso", "Archives"),
+        ("app.msixbundle", "Installers"),
+    ] {
+        assert_eq!(s.category_for(name), folder, "{name}");
+    }
+}
+
+#[test]
+fn older_settings_get_newer_types_but_user_choices_win() {
+    // A settings.json written by an older version: no "avif" anywhere.
+    let old = r#"{"categories":[{"name":"Images","extensions":["jpg"]},{"name":"Music","extensions":["mp3"]}]}"#;
+    let (s, warn) = Settings::from_json(old);
+    assert!(warn.is_none());
+    assert_eq!(s.category_for("a.avif"), "Images", "newer type goes into the folder the user still has");
+    assert_eq!(s.category_for("a.m4v"), "Other", "the user removed Videos: it does not come back");
+    // The user already put an extension somewhere: that place is kept.
+    let mine = r#"{"categories":[{"name":"Images","extensions":["jpg"]},{"name":"Camera","extensions":["cr2"]}]}"#;
+    let (s, _) = Settings::from_json(mine);
+    assert_eq!(s.category_for("IMG_1.cr2"), "Camera");
+    // A renamed folder keeps its name (case of the user's list is used).
+    let renamed = r#"{"categories":[{"name":"images","extensions":["jpg"]}]}"#;
+    assert_eq!(Settings::from_json(renamed).0.category_for("x.heif"), "images");
 }
 
 #[test]

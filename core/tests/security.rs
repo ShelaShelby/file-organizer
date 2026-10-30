@@ -503,8 +503,8 @@ fn project_rules_do_not_block_the_chosen_folder_itself() {
 // ---------------------------------------------------------------- 9. duplicates are compared again
 
 fn dup_pair(env: &Env) -> (PathBuf, PathBuf, GroupChoice) {
-    let a = file(&env.roots.downloads, "a.bin", &[7u8; 5000], days(20));
-    let b = file(&env.roots.documents, "b.bin", &[7u8; 5000], days(10));
+    let a = file(&env.roots.documents, "a.bin", &[7u8; 5000], days(20));
+    let b = file(&env.roots.downloads, "b.bin", &[7u8; 5000], days(10));
     let scan =
         find_duplicates(&env.roots, &DupOptions::new(&env.settings, SystemTime::now()), &Progress::default()).unwrap();
     assert_eq!(scan.groups.len(), 1);
