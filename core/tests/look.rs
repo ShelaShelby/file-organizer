@@ -56,7 +56,7 @@ fn file(dir: &Path, name: &str, content: &[u8], age: Duration) -> PathBuf {
     fs::create_dir_all(dir).unwrap();
     let p = dir.join(name);
     fs::write(&p, content).unwrap();
-    fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(SystemTime::now() - age).unwrap();
+    fs::OpenOptions::new().write(true).open(&p).unwrap().set_times(ft(SystemTime::now() - age)).unwrap();
     p
 }
 
@@ -200,4 +200,16 @@ fn fonts_are_used_only_if_the_files_exist() {
         let dir = organizer_core::paths::fonts_dir().unwrap();
         assert!(dir.is_dir());
     }
+}
+
+/// Last-changed AND created time `t`. On Windows a file counts as new by the
+/// newer of the two (a copied file keeps its old last-changed time).
+fn ft(t: SystemTime) -> fs::FileTimes {
+    let times = fs::FileTimes::new().set_modified(t);
+    #[cfg(windows)]
+    let times = {
+        use std::os::windows::fs::FileTimesExt;
+        times.set_created(t)
+    };
+    times
 }

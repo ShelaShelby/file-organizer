@@ -944,7 +944,7 @@ impl App {
             ui.set_max_width(720.0);
             ui.heading(format!("Send {} to the Recycle Bin?", plural(files.len(), "file")));
             ui.label(format!(
-                "These files will go ({}). You can restore them from the Recycle Bin.",
+                "These files will go ({}). You can restore them from the Recycle Bin until it is emptied.",
                 human_size(total)
             ));
             ui.add_space(4.0);

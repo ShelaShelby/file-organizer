@@ -1,7 +1,7 @@
 //! Scan the roots, build the preview list, and carry out confirmed moves.
 
 use crate::config::{safe_folder_name, Settings};
-use crate::fsops::{free_target, has_dot_parts, move_into, path_key};
+use crate::fsops::{free_target, has_dot_parts, move_into_tracked, path_key, remove_empty_dirs};
 use crate::journal::{BatchReport, Entry, Journal, Record};
 use crate::paths::{RootKind, Roots};
 use crate::safety::{check_entry, check_entry_unlocked, Check, SkipReason};
@@ -233,18 +233,22 @@ pub fn execute_tagged(
             }
         }
         let name = file_name(&m.source);
-        let new = match move_into(&m.source, &dir, &name) {
+        let (new, made_dirs) = match move_into_tracked(&m.source, &dir, &name) {
             Ok(p) => p,
             Err(e) => {
                 report.errors.push((m.source.clone(), e.to_string()));
                 continue;
             }
         };
-        let entry = Entry::new(report.batch, &m.source, &new, m.size, m.modified).tagged(tag);
+        let entry =
+            Entry::new(report.batch, &m.source, &new, m.size, m.modified).tagged(tag).with_made_dirs(made_dirs.clone());
         if let Err(e) = journal.append(&Record::Move(entry)) {
             // Without a journal line the move could not be undone: put it back.
             let msg = match crate::fsops::move_no_replace(&new, &m.source) {
-                Ok(()) => format!("journal could not be written ({e}); file left in place"),
+                Ok(()) => {
+                    remove_empty_dirs(&made_dirs);
+                    format!("journal could not be written ({e}); file left in place")
+                }
                 Err(e2) => format!("journal could not be written ({e}); file is now at {} ({e2})", new.display()),
             };
             report.errors.push((m.source.clone(), msg));

@@ -101,7 +101,7 @@ fn file(dir: &Path, name: &str, content: &[u8], age: Duration) -> PathBuf {
 
 fn set_age(p: &Path, age: Duration) {
     let f = fs::OpenOptions::new().write(true).open(p).unwrap();
-    f.set_modified(SystemTime::now() - age).unwrap();
+    f.set_times(ft(SystemTime::now() - age)).unwrap();
 }
 
 /// `n` bytes of content that depends on `seed`.
@@ -550,7 +550,7 @@ fn sized(dir: &Path, name: &str, len: u64, age: Duration) -> PathBuf {
     let p = dir.join(name);
     let f = fs::File::create(&p).unwrap();
     f.set_len(len).unwrap();
-    f.set_modified(SystemTime::now() - age).unwrap();
+    f.set_times(ft(SystemTime::now() - age)).unwrap();
     p
 }
 
@@ -662,4 +662,49 @@ fn saving_fixes_out_of_range_values() {
     let s = Settings { big_file_mb: 0, ..Settings::default() };
     s.save(&path).unwrap();
     assert_eq!(Settings::load_or_create(&path).0.big_file_mb, 500);
+}
+
+/// Last-changed AND created time `t`. On Windows a file counts as new by the
+/// newer of the two (a copied file keeps its old last-changed time).
+fn ft(t: SystemTime) -> fs::FileTimes {
+    let times = fs::FileTimes::new().set_modified(t);
+    #[cfg(windows)]
+    let times = {
+        use std::os::windows::fs::FileTimesExt;
+        times.set_created(t)
+    };
+    times
+}
+
+#[test]
+fn second_path_to_the_same_file_is_never_a_duplicate() {
+    let env = Env::new();
+    let a = file(&env.roots.documents, "a.jpg", &data(9, 4096), days(10));
+    let b = env.roots.downloads.join("b.jpg");
+    fs::hard_link(&a, &b).unwrap();
+    let scan = env.dupes();
+    assert!(scan.groups.is_empty(), "{:?}", group_names(&scan));
+    assert!(scan.skipped.items.iter().any(|(_, r)| *r == organizer_core::safety::SkipReason::SameFile));
+    // Even a handmade choice that says "remove b" leaves it alone: b IS a.
+    let scanned = |root: RootKind, p: &Path| {
+        let m = fs::metadata(p).unwrap();
+        ScannedFile { root, path: p.to_path_buf(), size: m.len(), modified: m.modified().unwrap() }
+    };
+    let files = vec![scanned(RootKind::Documents, &a), scanned(RootKind::Downloads, &b)];
+    let r = env.remove(&[GroupChoice { files, keep: vec![true, false] }]);
+    assert!(r.recycled.is_empty(), "{r:?}");
+    assert!(env.bin.calls().is_empty());
+    assert_eq!(fs::read(&a).unwrap(), data(9, 4096));
+    assert!(b.is_file());
+}
+
+#[test]
+fn real_copies_next_to_a_hard_link_are_still_found_once() {
+    let env = Env::new();
+    let a = file(&env.roots.documents, "a.jpg", &data(4, 4096), days(10));
+    fs::hard_link(&a, env.roots.documents.join("a-link.jpg")).unwrap();
+    file(&env.roots.downloads, "copy.jpg", &data(4, 4096), days(2));
+    let scan = env.dupes();
+    assert_eq!(scan.groups.len(), 1);
+    assert_eq!(scan.groups[0].files.len(), 2, "{:?}", group_names(&scan));
 }

@@ -36,6 +36,9 @@ pub enum SkipReason {
     SelfApp,
     /// A program or project folder (see [`program_folder_reason`]).
     ProgramFolder,
+    /// Another path to a file that is already listed (hard link, or the
+    /// same folder reached twice): not a second copy.
+    SameFile,
 }
 
 impl fmt::Display for SkipReason {
@@ -54,6 +57,7 @@ impl fmt::Display for SkipReason {
             SkipReason::Changed => write!(f, "changed since the scan"),
             SkipReason::SelfApp => write!(f, "File Organizer itself"),
             SkipReason::ProgramFolder => write!(f, "program or project folder"),
+            SkipReason::SameFile => write!(f, "same file as another one in the list (a second path to it, not a copy)"),
         }
     }
 }
@@ -119,10 +123,23 @@ pub fn check_meta(path: &Path, meta: &Metadata, min_age: Duration, now: SystemTi
         Ok(m) => m,
         Err(e) => return Check::Skip(SkipReason::InUse(e.to_string())),
     };
-    if is_recent(modified, min_age, now) {
+    if is_recent(newest_time(meta, modified), min_age, now) {
         return Check::Skip(SkipReason::Recent);
     }
     Check::Ok { size: meta.len(), modified }
+}
+
+/// The newer of the last-changed time and (on Windows) the created time.
+/// Copying, unzipping or restoring a file keeps its old last-changed time
+/// but gives it a new created time, so such a file still counts as new and
+/// is not moved the moment it arrives.
+pub fn newest_time(meta: &Metadata, modified: SystemTime) -> SystemTime {
+    #[cfg(windows)]
+    if let Ok(created) = meta.created() {
+        return created.max(modified);
+    }
+    let _ = meta;
+    modified
 }
 
 /// Why a sub-folder must not be entered (links / junctions, hidden or

@@ -2,8 +2,8 @@
 //! `%APPDATA%\file-organizer\journal.jsonl`) and undo. Every batch holds
 //! [`Journal::lock`] (a lock file next to the journal) while it runs.
 
-use crate::fsops::{move_no_replace, path_key};
-use crate::paths::{Roots, FROM_DESKTOP};
+use crate::fsops::{move_no_replace, path_key, remove_empty_dirs};
+use crate::paths::Roots;
 use crate::remove::{journal_path_ok, root_of, NOT_IN_LIST};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,11 @@ pub struct Entry {
     /// sorting, [`TAG_RENAME`] = Rename tab.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tag: String,
+    /// Folders this move created (deepest first). Undo removes only these,
+    /// and only while empty. `None` in journals written before this was
+    /// recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_dirs: Option<Vec<PathBuf>>,
 }
 
 impl Entry {
@@ -44,7 +49,13 @@ impl Entry {
             size,
             modified_ns: to_ns(modified),
             tag: String::new(),
+            made_dirs: None,
         }
+    }
+
+    pub fn with_made_dirs(mut self, dirs: Vec<PathBuf>) -> Entry {
+        self.made_dirs = Some(dirs);
+        self
     }
 
     pub fn tagged(mut self, tag: &str) -> Entry {
@@ -287,6 +298,29 @@ impl Journal {
         None
     }
 
+    /// After undo: remove the folders this move created, if they are empty
+    /// now. Each one must be a folder above the moved file and pass the same
+    /// journal checks (inside a chosen folder, never the chosen folder itself,
+    /// never a protected or app-data place). Journals from before folders
+    /// were recorded: only the `YYYY-MM` folder, never the type folder (it
+    /// may have been there before, e.g. the user's own "Music").
+    fn remove_made_dirs(&self, e: &Entry, roots: &Roots) {
+        let dirs: Vec<PathBuf> = match &e.made_dirs {
+            Some(d) => d.clone(),
+            None => e.new.parent().filter(|m| is_month_name(m)).map(Path::to_path_buf).into_iter().collect(),
+        };
+        let app_dir = self.path.parent();
+        let mut ok = Vec::new();
+        for d in dirs {
+            let above = d != e.new && e.new.starts_with(&d);
+            if !above || journal_path_ok(roots, &d, app_dir).is_err() || root_of(roots, &d.join("x")).is_err() {
+                break;
+            }
+            ok.push(d);
+        }
+        remove_empty_dirs(&ok);
+    }
+
     /// Move every file of `batch` back to where it was (renames get their
     /// old name back). A file is skipped (and reported) if it is gone, was
     /// changed or renamed again, or its old spot / old name is taken, and
@@ -348,7 +382,7 @@ impl Journal {
                 report.errors.push((e.old.clone(), format!("moved back, but journal could not be written: {err}")));
             }
             if e.tag != TAG_RENAME {
-                remove_empty_created_dirs(&e.new);
+                self.remove_made_dirs(e, roots);
             }
             report.moved.push((e.new.clone(), e.old.clone()));
         }
@@ -365,29 +399,6 @@ pub fn totals(history: &[BatchSummary]) -> Totals {
         t.tidied_files += b.remaining.len();
     }
     t
-}
-
-/// After undo, remove the `<Type>\<YYYY-MM>` (and `From Desktop`) folders
-/// again if they are now EMPTY. `remove_dir` refuses non-empty folders, so
-/// no file can be lost.
-fn remove_empty_created_dirs(new_path: &Path) {
-    let Some(month) = new_path.parent() else {
-        return;
-    };
-    if !is_month_name(month) || fs::remove_dir(month).is_err() {
-        return;
-    }
-    let Some(type_dir) = month.parent() else {
-        return;
-    };
-    if fs::remove_dir(type_dir).is_err() {
-        return;
-    }
-    if let Some(fd) = type_dir.parent() {
-        if fd.file_name().is_some_and(|n| n == FROM_DESKTOP) {
-            let _ = fs::remove_dir(fd);
-        }
-    }
 }
 
 fn is_month_name(p: &Path) -> bool {

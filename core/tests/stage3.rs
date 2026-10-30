@@ -60,7 +60,7 @@ fn file(dir: &Path, name: &str, content: &str, age: Duration) -> PathBuf {
 
 fn set_age(p: &Path, age: Duration) {
     let f = fs::OpenOptions::new().write(true).open(p).unwrap();
-    f.set_modified(SystemTime::now() - age).unwrap();
+    f.set_times(ft(SystemTime::now() - age)).unwrap();
 }
 
 fn days(n: u64) -> Duration {
@@ -582,4 +582,16 @@ fn autostart_value_written_and_removed_in_hkcu() {
         assert!(!is_enabled());
         assert_eq!(get_run_value(VALUE_NAME).unwrap(), None);
     }
+}
+
+/// Last-changed AND created time `t`. On Windows a file counts as new by the
+/// newer of the two (a copied file keeps its old last-changed time).
+fn ft(t: SystemTime) -> fs::FileTimes {
+    let times = fs::FileTimes::new().set_modified(t);
+    #[cfg(windows)]
+    let times = {
+        use std::os::windows::fs::FileTimesExt;
+        times.set_created(t)
+    };
+    times
 }
