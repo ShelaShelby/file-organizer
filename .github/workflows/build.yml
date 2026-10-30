@@ -30,7 +30,14 @@ jobs:
         run: cargo build --release --locked
 
       - name: Test
-        run: cargo test --workspace --locked
+        shell: pwsh
+        run: |
+          cargo test --workspace --locked 2>&1 | Tee-Object -FilePath test.log
+          if ($LASTEXITCODE -ne 0) {
+            $lines = Select-String -Path test.log -Pattern "panicked|left|right|FAILED|---- |error" | Select-Object -First 60 | ForEach-Object { $_.Line.Replace('%','%25') }
+            Write-Output ("::error title=tests::" + ($lines -join "%0A"))
+            exit 1
+          }
 
       - name: Real Recycle Bin test (shows its output)
         run: cargo test -p organizer-core --locked --test stage2 real_windows_recycle_bin -- --nocapture
