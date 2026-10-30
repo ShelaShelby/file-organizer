@@ -23,10 +23,8 @@
   again right before each file is touched.
 - DLLs planted next to the exe (e.g. in Downloads): the exe loads its own imports from System32 only,
   and Explorer is started by its full path.
-- Removing the only copy by mistake: duplicates are compared by the real file behind each path
-  (volume + file id), so a hard link or a folder reached twice is never treated as a second copy.
-- Removing your folders on Undo: only folders the app created for a move (recorded in the journal)
-  are removed, and only while empty.
+- Removing the only copy: duplicates are compared by the real file behind each path (volume + file
+  id), so a hard link is never a second copy. Undo removes only empty folders the app itself made.
 - Two copies running at once (window and background sorter) share one lock, so no file moves twice.
 
 ## Known limits
@@ -34,10 +32,8 @@
   itself; the app cannot stop that.
 - The exe is not code-signed, so SmartScreen may warn the first time you run it.
 - The graphics driver loads OpenGL DLLs dynamically at run time; that loading is not restricted.
-- The Recycle Bin can be emptied by you, by Storage Sense or by Windows when it is full (oldest
-  files first); after that a removed file is gone.
-- Moving a file to another drive is copy-then-delete. If Windows cannot remove the original, both
-  are left and the copy's place is reported; nothing is lost.
+- The Recycle Bin can be emptied by you, Storage Sense or Windows when full; then a file is gone.
+- A move to another drive is copy-then-delete; if the original cannot be removed, both are kept.
 
 ## Reporting a problem
 Open an issue on GitHub. Please do not include personal files.
